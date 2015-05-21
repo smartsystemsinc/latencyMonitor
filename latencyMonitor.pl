@@ -2,43 +2,57 @@
 
 # Force me to write this properly
 
-use strict;
 use warnings;
+use strict;
+use 5.0010;    # For the sake of switch
+##no critic (TestingAndDebugging::ProhibitNoWarnings)
+no warnings 'experimental::smartmatch';
+use feature 'switch';
 
 # Modules
-use Algorithm::Loops qw( NestedLoops );            # cpanm Algorithm::Loops
-use Archive::Zip qw( :ERROR_CODES :CONSTANTS );    # cpanm Archive::Zip
+use Algorithm::Loops qw( NestedLoops );            # cpan Algorithm::Loops
+use Archive::Zip qw( :ERROR_CODES :CONSTANTS );    # cpan Archive::Zip
 use Carp;                                          # Built-in
-use Config::Simple;    # dpkg libconfig-simple-perl || cpanm Config::Simple
+use Config::Simple;    # dpkg libconfig-simple-perl || cpan Config::Simple
 
 # NOTE: Keep the encoding of the INI file ANSI or else things go all to hell
-use Date::Manip;                # dpkg libdate-manip-perl || cpanm Date::Manip
-use English qw(-no_match_vars); # built-in
+use Date::Manip;                 # dpkg libdate-manip-perl || cpan Date::Manip
+use English qw(-no_match_vars);  # built-in
 use Excel::Writer::XLSX
-    ; # dpkg libexcel-writer-xslx-perl || cpan App::cpanminus && [sudo] cpanm Excel::Writer::XLSX (Case-sensitive)
-use File::Basename;                          # Built-in
-use File::Copy;                              # Built-in
-use Getopt::Long qw(:config no_ignore_case); # Built-in
-use Net::FTP;                                # cpanm Net::FTP (Case-sensitive)
-use PerlIO::Util;                            # cpanm --notest PerlIO::Util
-use Pod::Usage;                              # Built-in
-use POSIX qw(strftime);                      # Built-in
+    ; # dpkg libexcel-writer-xslx-perl || cpan Excel::Writer::XLSX (Case-sensitive)
+use Fcntl ':flock';
+use File::Basename;                             # Built-in
+use File::Copy;                                 # Built-in
+use Getopt::Long qw(:config no_ignore_case);    # Built-in
+use Net::FTP;                                   # cpan Net::FTP
+use PerlIO::Util;                               # cpan --notest PerlIO::Util
+use Pod::Usage;                                 # Built-in
+use POSIX qw(strftime);                         # Built-in
 
+## no critic (RequireLocalizedPunctuationVars)
 BEGIN {
-    $ENV{Smart_Comments}
-        = " @ARGV " =~ /--debug/xms;    # Enable Smart::Comments on demand.
+    $ENV{Smart_Comments} = " @ARGV " =~ /--debug/xms
+        ; # Enable Smart::Comments on demand. Keep this BEGIN block above the use statement.
 }
-use Smart::Comments -ENV;               # cpanm Smart::Comments
-use Time::Local;                        # Built-in
+
+use Smart::Comments -ENV;    # cpan Smart::Comments
+use Time::Local;             # Built-in
 if ( $OSNAME eq 'MSWin32' ) {
-    require Win32;                      # Built-in
-    require Win32::Autoglob;            # cpanm Win32::Autoglob
-    require Win32::Process;             # Built-in
+    require Win32;              # Built-in
+    require Win32::Autoglob;    # cpan Win32::Autoglob
+    require Win32::Process;     # Built-in
 }
 
 ### OS: $OSNAME
 
-our $VERSION = '0.5';
+INIT {
+    if ( !flock main::DATA, LOCK_EX | LOCK_NB ) {
+        print "$PROGRAM_NAME is already running\n" or croak $ERRNO;
+        exit 1;
+    }
+}
+
+our $VERSION = '0.6';
 
 # Pre-declare main variables
 my ( $site, $maxiterations, $maxping, $ftp_site, $user, $pass, @host );
@@ -72,11 +86,11 @@ my @dirs
 if ( $OSNAME eq 'linux' ) {
     my $local = $ENV{'HOME'} . '/.local';
     my $share = $ENV{'HOME'} . '/.local/share';
-    mkdir $local unless -e $local;
-    mkdir $share unless -e $share;
+    if ( !-d $local ) { mkdir $local or croak $ERRNO }
+    if ( !-d $share ) { mkdir $share or croak $ERRNO }
 }
 foreach my $dir (@dirs) {
-    unless ( -e $dir ) {
+    if ( !-d $dir ) {
         mkdir $dir or croak $ERRNO;
     }
 }
@@ -122,10 +136,10 @@ GetOptions(
     'open-hour|O:i'   => \$open_hour,
     'close-hour|C:i'  => \$close_hour,
     'crit-warn|W:i'   => \$crit_warn,
-) or pod2usage( -verbose => 1 );
+) or pod2usage( -verbose => 0 );
 
 if ($help) {
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
 if ($man) {
     pod2usage( -verbose => 2 );
@@ -152,99 +166,93 @@ else {
 
 my $finishing = 0;
 local $SIG{ALRM} = sub {
-    alarm_action();
-    alarm $interval unless $finishing == 1;
+    if ( $finishing != 1 ) {
+        alarm_action();
+        alarm $interval;
+    }
 };
 alarm $interval;
 
 # Warn the user if the config file is missing
-unless ( -e "$config" ) {
+if ( !-f "$config" ) {
     warn "latencyConfig.ini missing\n";
 }
 
 # Verify that every variable has _something_ in it, at least
-unless ( length $site ) {
+if ( !length $site ) {
     warn
         "Variable 'site' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $maxiterations ) {
+if ( !length $maxiterations ) {
     warn
         "Variable 'max iterations' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $maxping ) {
+if ( !length $maxping ) {
     warn
         "Variable 'maxping' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $ftp_site ) {
+if ( !length $ftp_site ) {
     warn
         "Variable 'ftp site' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $user ) {
+if ( !length $user ) {
     warn
         "Variable 'ftp user' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $pass ) {
+if ( !length $pass ) {
     warn
         "Variable 'ftp pass' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( scalar @host ) {
+if ( !scalar @host ) {
     warn
         "Variable 'domains' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $stop_hour ) {
+if ( !length $stop_hour ) {
     warn
         "Variable 'stop hour' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $stop_minute ) {
+if ( !length $stop_minute ) {
     warn
         "Variable 'stop minute' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $open_hour ) {
+if ( !length $open_hour ) {
     warn
         "Variable 'open hour' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $close_hour ) {
+if ( !length $close_hour ) {
     warn
         "Variable 'close hour' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
-unless ( length $crit_warn ) {
+if ( !length $crit_warn ) {
     warn
         "Variable 'crit warn' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 1 );
+    pod2usage( -verbose => 0 );
 }
 
-# Set a few more variables and the lock
+# Set a few more variables
 
 my $zipdatafilename = "$archives/" . $site . '-latency-' . $datetime . '.zip';
 my $zipdatafilename_short = "$site" . '-latency-' . $datetime . '.zip';
 my $debug_file = "$archives/" . $site . '-debug-' . $datetime . '.txt';
 
 if ($debug) {
+    *STDOUT->push_layer( tee => ">>$debug_file" );
     *STDERR->push_layer( tee => ">>$debug_file" );
 }
 
-use Fcntl ':flock';
-
-open my $SELF, '<', $PROGRAM_NAME or croak 'I am already running...';
-flock $SELF, LOCK_EX | LOCK_NB or exit;
-close $SELF or croak $ERRNO;
-
 ### Starting main program
 my @children;
-
-### Create heartbeat file
-make_lock();
 
 ### Fork based on number of domains
 for ( my $count = 0; $count <= $#host; $count++ ) {
@@ -280,6 +288,10 @@ latency2excel();    # Leaves files in $reporting
 zip_it("$reporting/*$datetime.*");    # Process only today's files
 ### Archiving
 archive_it();                         # Leaves files on FTP and in $archives
+if ( $OSNAME eq 'MSWin32' ) {
+    windows_cleanup();                # $SELF is closed here via brute force
+    exit;
+}
 
 ### End of main program
 
@@ -315,6 +327,8 @@ sub checkem {
         if ( -e $file_yesterday ) {
             $cur_hour   = (localtime)[2];
             $cur_minute = (localtime)[1];
+            ### $cur_hour
+            ### $cur_minute
 
 # Check the time; if the time equals the defined quitting time, count it as a new day
             if (   $cur_hour < $stop_hour
@@ -337,8 +351,6 @@ sub checkem {
     ### $user
     ### $pass
     ### @host
-    ### $cur_hour
-    ### $cur_minute
     ### $stop_hour
     ### $stop_minute
     ### $open_hour
@@ -357,21 +369,21 @@ sub latency_test {
         exit 0;
     }
 
-    my $HOST = qr{^(www.|[a-zA-Z].)[a-zA-Z0-9\-\.]+\.}xms;
+    my $HOST = qr{^(www.|[[:alpha:]].)[[:alpha:]][\d][-][.]]+[.]}xms;
     my $TLD  = qr{(com|edu|gov|mil|net|org|biz|info|name|museum|us|ca|uk)}xms;
     my $URL  = qr{ ( ($HOST) ($TLD) ) }xms;
-    my $IP   = qr{^[\d]{1,3}\.[\d]{1,3}\.[\d]{1,3}\.[\d]{1,3}$}xms;
+    my $IP   = qr{^[\d]{1,3}[.][\d]{1,3}[.][\d]{1,3}[.][\d]{1,3}}xms;
 
-    unless ( $host =~ $URL || $host =~ $IP ) {
+    if ( !$host =~ $URL || !$host =~ $IP ) {
         croak(
             "Host $host must be of the format <[www].test.com> or xxx.xxx.xxx\n"
         );
     }
 
-    unless ( $maxiterations =~ m/^\d+$/xms ) {
+    if ( $maxiterations !~ m/^\d+$/xms ) {
         croak("Iterations must be an integer\n");
     }
-    unless ( $maxping =~ m/^\d+$/xms ) {
+    if ( $maxping !~ m/^\d+$/xms ) {
         croak("Max ping must be an integer\n");
     }
     if ( $maxping == 0 ) {
@@ -409,11 +421,11 @@ sub latency_test {
             $p = `ping -c 1 $host`;
         }
         ### $p
-        if (   $p =~ m/General failure/xms
-            || $p =~ m/Destination host unreachable/xms
-            || $p =~ m/Ping request could not find host/xms
-            || $p =~ m/Request timed out/xms
-            || $p =~ m/TTL expired in transit/xms )
+        if (   $p =~ m/General[ ]failure/xms
+            || $p =~ m/Destination[ ]host[ ]unreachable/xms
+            || $p =~ m/Ping[ ]request[ ]could[ ]not[ ]find[ ]host/xms
+            || $p =~ m/Request[ ]timed[ ]out/xms
+            || $p =~ m/TTL[ ]expired[ ]in[ ]transit/xms )
         {
             my $chain = "$timestamp $host";
 
@@ -437,7 +449,7 @@ sub latency_test {
             ($ip) = $p =~ /Reply[ ]from[ ](\d+[.][\d.]+)/xms;
         }
         elsif ( $OSNAME eq 'linux' ) {
-            ($ip) = $p =~ /PING.+(\(\d+[.]\d+[.][\d.]+\))/xms;
+            ($ip) = $p =~ /PING.+([(]\d+[.]\d+[.][\d.]+[)])/xms;
         }
         ### $ip
         my ($duration) = $p =~ /time\s?=?<?(\d+)/xms;
@@ -498,22 +510,19 @@ sub move_it {
         ### $datafilename_crit
         copy $datafilename, "$staging/" or carp "Copy failed $ERRNO";
         if ( $OSNAME eq 'MSWin32' ) {
-            sleep 1;
             push @win_cleanup, $datafilename, $datafilename_warn,
                 $datafilename_crit;
-            copy $datafilename_warn, "$reporting/"
-                or carp "Copy failed $ERRNO";
-            copy $datafilename_crit, "$reporting/"
-                or carp "Copy failed $ERRNO";
+            foreach ( $datafilename, $datafilename_warn, $datafilename_crit )
+            {
+                copy $_, "$reporting/"
+                    or carp "Copy failed $ERRNO";
+            }
         }
         elsif ( $OSNAME eq 'linux' ) {
-            move $datafilename, "$reporting/" or carp "Move failed $ERRNO";
-            sleep 1;
-            move $datafilename_warn, "$reporting/"
-                or carp "Move failed $ERRNO";
-            sleep 1;
-            move $datafilename_crit, "$reporting/"
-                or carp "Move failed $ERRNO";
+            foreach ( $datafilename, $datafilename_warn, $datafilename_crit )
+            {
+                move $_, "$reporting/" or carp "Move failed $ERRNO";
+            }
         }
     }
     return;
@@ -524,12 +533,55 @@ sub latency2excel {
 # Note that $maxiterations isn't passed and is assumed to be 85000 for the sake of making the statistical highlighting
 
     # Create a new Excel workbook
-    my $workbook = Excel::Writer::XLSX->new("$staging/$site-$datetime.xlsx");
-    my @files    = "$staging/*-latency-$datetime.txt";
+    my @files = "$staging/*-latency-$datetime.txt";
     ### files: map {glob} @files
+    my $workbook = Excel::Writer::XLSX->new("$staging/$site-$datetime.xlsx");
+    $workbook->set_optimization();
+
+    # Define formatting for labels and conditions
+    my $blue   = '#83CAFF';
+    my $green  = '#579D1C';
+    my $yellow = '#FFD320';
+    my $red    = '#C5000B';
+    my $f_info = $workbook->add_format(
+        bold      => 1,
+        underline => 1,
+        size      => 16,
+        align     => 'center'
+    );
+    my $f_label = $workbook->add_format(
+        bold     => 1,
+        size     => 14,
+        bg_color => "$blue"
+    );
+    my $f_lable_thresh = $workbook->add_format(
+        bold     => 1,
+        size     => 11,
+        bg_color => "$blue"
+    );
+    my $f_lable_warn = $workbook->add_format(
+        bold     => 1,
+        size     => 14,
+        bg_color => "$blue"
+    );
+    my $f_lable_fail = $workbook->add_format(
+        bold     => 1,
+        size     => 14,
+        bg_color => "$blue"
+    );
+    my $f_bad  = $workbook->add_format( bg_color => "$red" );
+    my $f_warn = $workbook->add_format( bg_color => "$yellow" );
+    my $f_ok   = $workbook->add_format( bg_color => "$green" );
+    my $f_latency = $workbook->add_format(
+        bg_color   => "$blue",
+        num_format => '#,##0'
+    );
+    my $f_percent = $workbook->add_format(
+        num_format => '0.0%',
+        bg_color   => "$yellow"
+    );    # Color will be modified via conditional formatting
 
     foreach my $file ( map {glob} @files ) {
-        open my $TXTFILE, '<', "$file" or croak("File not accessible\n");
 
         # Add a worksheet
         my @protosheetname = split /-/xms, $file;
@@ -539,6 +591,9 @@ sub latency2excel {
         ### $sheetname
         my $worksheet = $workbook->add_worksheet($sheetname);
         my $row       = 0;
+
+        ## no critic (RequireBriefOpen)
+        open my $TXTFILE, '<', "$file" or croak("File not accessible\n");
         while (<$TXTFILE>) {
             chomp;
 
@@ -565,73 +620,86 @@ sub latency2excel {
             $worksheet->write( $row, $col, $ip );
             $col++;
             $worksheet->write( $row, $col, $latency );
+
+            if ( $row < 10 ) {
+
+                ## no critic (ValuesAndExpressions::RequireInterpolationOfMetachars)
+                # Create statistical formulae
+                given ($row) {
+                    when (/0/xms) {
+                        $worksheet->write( 'H1', 'Information', $f_info );
+                        $worksheet->write( 'J1', 'Thresholds',  $f_info );
+                    }
+                    when (/2/xms) {
+                        $worksheet->write( 'H3', 'Count', $f_label );
+                        $worksheet->write_formula( 'I3', '=COUNTA($A:$A)' );
+                    }
+                    when (/3/xms) {
+                        $worksheet->write( 'H4', 'Warnings', $f_lable_warn );
+                        $worksheet->write_formula( 'I4',
+                            '=COUNTIF($A:$A,"WARNING:")', $f_warn );
+                        $worksheet->write( 'J4', '>200ms', $f_lable_thresh );
+                    }
+                    when (/4/xms) {
+                        $worksheet->write( 'H5', 'Failures', $f_lable_fail );
+                        $worksheet->write_formula( 'I5',
+                            '=COUNTIF($A:$A,"FAILURE:")', $f_bad );
+                        $worksheet->write( 'J5', q{}, $f_lable_thresh );
+                    }
+                    when (/5/xms) {
+                        $worksheet->write( 'H6', 'Average Latency',
+                            $f_label );
+                        $worksheet->write_formula( 'I6', '=SUM($F:$F)/(I3)',
+                            $f_latency );
+                        $worksheet->write( 'J6', '>=200', $f_lable_thresh );
+                    }
+                    when (/6/xms) {
+                        $worksheet->write( 'H7', '% high latency', $f_label );
+                        $worksheet->write_formula( 'I7', '=(I4/(I3))',
+                            $f_percent );
+                        $worksheet->write( 'J7', '>=10%', $f_lable_thresh );
+                    }
+                    when (/7/xms) {
+                        $worksheet->write( 'H8', '% high latency (200-499)',
+                            $f_label );
+                        $worksheet->write_comment( 'H8',
+                            'Relative to % high latency, not the entire dataset'
+                        );
+                        $worksheet->write_formula(
+                            'I8',
+                            '=IF(I4=0,0,(COUNTIFS($F:$F,">199",$F:$F,"<500"))/I4)',
+                            $f_percent
+                        );
+                        $worksheet->write( 'J8', q{}, $f_lable_thresh );
+                    }
+                    when (/8/xms) {
+                        $worksheet->write( 'H9', '% high latency (500)',
+                            $f_label );
+                        $worksheet->write_comment( 'H9',
+                            'Relative to % high latency, not the entire dataset'
+                        );
+                        $worksheet->write_formula( 'I9',
+                            '=IF(I4=0,0,(COUNTIF($F:$F,">=500")/I4))',
+                            $f_percent );
+                        $worksheet->write( 'J9', '>=50%', $f_lable_thresh );
+                    }
+                    when (/9/xms) {
+
+                        $worksheet->write( 'H10', '% of packets dropped',
+                            $f_label );
+                        $worksheet->write_formula( 'I10', '=(I5/(I3))',
+                            $f_percent );
+                        $worksheet->write( 'J10', '>=10%', $f_lable_thresh );
+                    }
+                }
+
+            }
             $row++;
         }
         close $TXTFILE or croak $ERRNO;
 
         # Clean up file after use, since it's a copy
         unlink $file;
-
-        # Define formatting for labels and conditions
-        my $blue   = '#83CAFF';
-        my $green  = '#579D1C';
-        my $yellow = '#FFD320';
-        my $red    = '#C5000B';
-        my $f_info = $workbook->add_format(
-            bold      => 1,
-            underline => 1,
-            size      => 16,
-            align     => 'center'
-        );
-        my $f_label = $workbook->add_format(
-            bold     => 1,
-            size     => 14,
-            bg_color => "$blue"
-        );
-        my $f_lable_thresh = $workbook->add_format(
-            bold     => 1,
-            size     => 11,
-            bg_color => "$blue"
-        );
-        my $f_lable_warn = $workbook->add_format(
-            bold     => 1,
-            size     => 14,
-            bg_color => "$blue"
-        );
-        my $f_lable_fail = $workbook->add_format(
-            bold     => 1,
-            size     => 14,
-            bg_color => "$blue"
-        );
-        my $f_bad  = $workbook->add_format( bg_color => "$red" );
-        my $f_warn = $workbook->add_format( bg_color => "$yellow" );
-        my $f_ok   = $workbook->add_format( bg_color => "$green" );
-        my $f_latency = $workbook->add_format(
-            bg_color   => "$blue",
-            num_format => '#,##0'
-        );
-        my $f_percent = $workbook->add_format(
-            num_format => '0.0%',
-            bg_color   => "$yellow"
-        );    # Color will be modified via conditional formatting
-
-        # Format I3 as "Bad" if Count is less than 85,000, else as "OK"
-        $worksheet->conditional_formatting(
-            'I3',
-            {   type     => 'cell',
-                criteria => '<',
-                value    => '85000',
-                format   => $f_bad,
-            }
-        );
-        $worksheet->conditional_formatting(
-            'I3',
-            {   type     => 'cell',
-                criteria => qw{=},
-                value    => '85000',
-                format   => $f_ok,
-            }
-        );
 
         # Format I6 as "bad" if average latency >= 200
         $worksheet->conditional_formatting(
@@ -713,50 +781,6 @@ sub latency2excel {
             }
         );
 
-        # Create statistical formulae
-        $worksheet->write( 'H1', 'Information', $f_info );
-        $worksheet->write( 'J1', 'Thresholds',  $f_info );
-        $worksheet->write( 'H3', 'Count',       $f_label );
-        $worksheet->write_formula( 'I3', '=COUNTA($A:$A)' )
-            ;    # NOTE Total lines $. maybe?
-        $worksheet->write( 'J3', '<85,000 packets', $f_lable_thresh );
-
-        $worksheet->write( 'H4', 'Warnings', $f_lable_warn );
-        $worksheet->write_formula( 'I4', '=COUNTIF($A:$A,"WARNING:")',
-            $f_warn );    # NOTE Total lines $. maybe?
-        $worksheet->write( 'J4', '>200ms',   $f_lable_thresh );
-        $worksheet->write( 'H5', 'Failures', $f_lable_fail );
-        $worksheet->write_formula( 'I5', '=COUNTIF($A:$A,"FAILURE:")',
-            $f_bad );     # NOTE Total lines $. maybe?
-        $worksheet->write( 'J5', '', $f_lable_thresh );
-
-        $worksheet->write( 'H6', 'Average Latency', $f_label );
-        $worksheet->write_formula( 'I6', '=SUM($F:$F)/(I3)', $f_latency )
-            ;             # NOTE Total lines $. maybe?
-        $worksheet->write( 'J6', '>=200', $f_lable_thresh );
-
-        $worksheet->write( 'H7', '% high latency', $f_label );
-        $worksheet->write_formula( 'I7', '=(I4/(I3))', $f_percent );
-        $worksheet->write( 'J7', '>=10%', $f_lable_thresh );
-        $worksheet->write( 'H8', '% high latency (200-499)', $f_label );
-        $worksheet->write_comment( 'H8',
-            'Relative to % high latency, not the entire dataset' );
-        $worksheet->write_formula( 'I8',
-            '=IF(I4=0,0,(COUNTIFS($F:$F,">199",$F:$F,"<500"))/I4)',
-            $f_percent );    # NOTE Total lines $. maybe?
-        $worksheet->write( 'J8', '', $f_lable_thresh );
-        $worksheet->write( 'H9', '% high latency (500)', $f_label );
-        $worksheet->write_comment( 'H9',
-            'Relative to % high latency, not the entire dataset' );
-        $worksheet->write_formula( 'I9',
-            '=IF(I4=0,0,(COUNTIF($F:$F,">=500")/I4))', $f_percent )
-            ;                # NOTE Total lines $. maybe?
-        $worksheet->write( 'J9', '>=50%', $f_lable_thresh );
-
-        $worksheet->write( 'H10', '% of packets dropped', $f_label );
-        $worksheet->write_formula( 'I10', '=(I5/(I3))', $f_percent );
-        $worksheet->write( 'J10', '>=10%', $f_lable_thresh );
-
         # Set colum widths, hide data columns A-G
         $worksheet->set_column( 'A:C', '10', undef, 1 );
         $worksheet->set_column( 'D:D', '20', undef, 1 );
@@ -797,9 +821,6 @@ sub zip_it {
 
 sub archive_it {
 
-    # my $ftpsite = shift;
-    # my $user = shift;
-    # my $pass = shift;
     ### Connecting to FTP site
     my $ftp = Net::FTP->new("$ftp_site")
         or croak "Cannot connect to $ftp_site: $EVAL_ERROR";
@@ -821,20 +842,8 @@ sub archive_it {
 
 sub alarm_action {
     ### alarm_action event
-    make_lock();
     check_crit();
     check_time();
-    return;
-}
-
-sub make_lock {
-
-  # Used by N-Able to see if script is running; it deletes it after each check
-    my $lock = "$base/latencyLock.dat";
-    open my $LOCK, '>', "$lock"
-        or croak "unable to create the log file\n";
-    close $LOCK
-        or croak "Unable to close the lock \n";
     return;
 }
 
@@ -947,7 +956,9 @@ sub windows_finish {
 }
 
 sub windows_cleanup {
-    POSIX::close($_) for 3 .. 1024;       ## Arbitrary upper bound
+    for ( 3 .. 1024 ) {
+        POSIX::close($_);                 # Arbitrary upper bound
+    }
     ### @win_cleanup
     unlink @win_cleanup or carp "Unable to cleanup files (Windows) $ERRNO";
     return;
@@ -956,25 +967,25 @@ sub windows_cleanup {
 sub clean {
 
     # Ensure we have all the data we need
-    unless ( length $site ) {
+    if ( !length $site ) {
         warn
             "Variable 'site' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 1 );
+        pod2usage( -verbose => 0 );
     }
-    unless ( length $ftp_site ) {
+    if ( !length $ftp_site ) {
         warn
             "Variable 'ftp site' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 1 );
+        pod2usage( -verbose => 0 );
     }
-    unless ( length $user ) {
+    if ( !length $user ) {
         warn
             "Variable 'ftp user' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 1 );
+        pod2usage( -verbose => 0 );
     }
-    unless ( length $pass ) {
+    if ( !length $pass ) {
         warn
             "Variable 'ftp pass' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 1 );
+        pod2usage( -verbose => 0 );
     }
 
     # Gather a list of files not matching today's date
@@ -1037,11 +1048,9 @@ sub clean {
 
     # Archiving files
     # Check whether files in here exist on the FTP, then upload selectively
-    my @archiving_files = grep {
-        !/
-    # Match files that aren't dot or dotdot, that is, PWD or up a level
-    ^\.\.?$/xms
-    } <$reporting/*.zip>;
+
+    # Get files that don't match "dot" or "dot dot", i.e. PWD or its parent
+    my @archiving_files = grep { !/^[.][.]?$/xms } <$reporting/*.zip>;
     ### @archiving_files
     if (@archiving_files) {
         ### Connecting to FTP site (cleanup)
@@ -1089,7 +1098,7 @@ sub get_unique_files {
             # Separate host and date via dashes
             my $host  = ( split /-/xms, $_ )[0];
             my $date1 = ( split /-/xms, $_ )[-1];    # Year
-            $date1 =~ s/\.txt//xms;
+            $date1 =~ s/[.]txt//xms;
             my $date2 = ( split /-/xms, $_ )[-2];    # Month
             my $date3 = ( split /-/xms, $_ )[-3];    # Day
             my $date = $date3 . qw{-} . $date2 . qw{-} . $date1;
@@ -1125,6 +1134,27 @@ __END__
 =begin comment
 
 Changelog:
+
+0.6
+-Adjusted the regex for Linux to include optional whitespace in the time and to look for the IP from the ping in
+ the top line instead of later on as in Windows, since that doesn't always appear if packet loss is at 100%
+-Discovered that some ping tests finishing quickly and then the check event's
+ cleanup being triggered would cause issues due to files being moved, so those
+ sections were re-arranged
+-Cleaned up the code considerably with the aid of perlcritic and perltidy.
+-Re-wrote latency2excel() to facilitate the use of its memory optimisation,
+ which should have a fairly tremendous effect on overall efficiency of that process, notably in memory usage.
+-Due to the above, introduced the use of the experimental 'switch' feature, which replaces the deprecated
+ Switch.pm
+-Replaced instances of "unless" with negative if-statements and tidied up a few
+ more of the regexes all in the name of readability
+-Adjusted the documentation to be more in-line with standards
+-Fixed a bug with the Windows cleanup operations which previously omitted the raw latency records from the final zip
+-Fixed the faulthy file-locking algorithm, replacing it with the one used in Sys::RunAlone and putting it in an INIT
+ block.
+-Removed the heartbeat file, as the proper locking algorithm makes it needless.
+ Updated this documentation accordingly.
+
 0.5
 -Re-wrote the script to be monolithic instead of spread across 3 files
 -Changed the name of the main script accordingly from "latencyLaunch.pl" to
@@ -1168,10 +1198,6 @@ Changelog:
 -The --debug parameter now creates a dated DEBUG file in a similar fashion to
  the CRIT/WARN files, which is included in the archive. This file contains all STDERR output, which Smart::Comments
  also uses.
--Adjusted the regex for Linux to include optional whitespace in the time and to look for the IP from the ping in
- the top line instead of later on as in Windows, since that doesn't always appear if packet loss is at 100%
--Discovered that some ping tests finishing quickly and then the check event's cleanup being triggered would cause issues due to files being moved, so those sections were re-arranged.
--Cleaned up the code considerably with the aid of perlcritic and perltidy.
 
 0.4b
 -Adjusted the regex in latency_test.pl for grabbing the duration of a ping; it did not account for pings
@@ -1218,9 +1244,9 @@ Nothing at the moment
 
 LatencyMonitor - Parallel latency data collection tool
 
-=head1 SYNOPSIS
+=head1 USAGE
 
-     perl latencyMonitor.exe [OPTION...] or else defaults to the ini
+     perl latencyMonitor.pl [OPTION...] or else defaults to the ini
      -h, --help          Display this help text
          --man           Displays the full embedded manual
          --debug         Enable debug data via Smart::Comments; sets time checks to 5 seconds.
@@ -1272,56 +1298,7 @@ desired/correct data files on a given day. It is recommended (and safe) to have
 N-Able simply launch the script every half hour or so, as the script will
 self-destruct if it sees another instance running.
 
-=head1 INSTALLATION
-
-System requirements:
-
-    -A supported version of Windows (tested and developed under Windows 8.1
-     Spring) or Linux (tested and developed under Ubuntu 14.04 LTS).
-    -Approximately 9MB for the executable
-    -Sufficient space for log files. A day's worth is typically in the
-     realm of 10MB or so.
-    -Under Windows, UAC needs to be disabled because of Powershell, which has a
-     warped idea of what constitutes security.
-    -If desired, ensure the config file is created in C:\SS\Latency\Bin or
-     ~/.local/share/SS/Latency/Bin as appropriate (documented below)
-
-Copy the executable to C:\SS\Latency\Bin or ~/.local/share/SS/Latency/Bin as
-appropriate; capitalisation is important. All other required folders will be
-generated by the script when it runs. N-Able deployment is recommended for a
-more seamless experience for users.
-
-=head1 INVOCATION AND USE
-
-Invocation, done within cmd.exe or Powershell (though perl itself will
-execute its processes in cmd), is documented above under SYNOPSIS.
-
-The program will attempt to use a configuration file
-(C:\SS\Latency\Bin\latencyConfig.ini or
-~/.local/share/SS/Latency/Bin/latencyConfig.ini as appropriate), structured as
-follows:
-
-     site=siteName
-     maxiterations=85000
-     maxping=200
-     ftpSite=ftp.site.net
-     user=ftpUser
-     pass=password
-     host=8.8.8.8, www.startpage.com
-     stopHour=06
-     stopMinute=45
-     openHour=8
-     closeHour=17
-     critWarn=7
-
-Note that the list of hosts is separated by both a comma and whitespace here,
-in contrast to the command-line syntax. Parameters passed to the command line
-take precedence over parameters defined in the INI file, allowing for local
-exceptions as needed.
-
-All parameters have some basic sanity checking to help
-prevent input errors, and if any are found the program will print a
-helpful reminder. The program, as described previously, outputs to several
+The program, as described previously, outputs to several
 text files and prints one of three things per line, roughly once per second
 (a delay of 1 second is built-in to avoid DDOSing the target). Under
 normal conditions, a line will be printed as follows:
@@ -1360,14 +1337,62 @@ reason, or to start it explicitly after a planned reboot. Along those same
 lines, it also has a feature wherein if, when it runs, it detects a
 www.google.com latency log dated for that same day, it will count the number of
 lines in it and then adjust its run to ensure that the google log has 85000
-entries, which further facilitates the usage of planned reboots. Lastly, it
-also creates, every fifteen minutes by default, a "heartbeat" file called
-latencyLock.dat which N-Able can use to see if the script is likely running
-(the script deletes it upon completion).
+entries, which further facilitates the usage of planned reboots.
 
 Should --debug be used, additional data will be printed to STDERR but not the
 aforementioned files; instead, it will go to a dated debug log in the Archives
 folder, where it will be scooped up later during the archival process.
+
+=head1 REQUIRED ARGUMENTS
+
+All obvious arguments are required; if not provided on the command line, they
+can be provided via an INI file.
+
+=head1 OPTIONS
+
+The only behaviour-modifying options at present are --preserve-time (when used
+in conjunction with --debug) and --clean.
+
+=head1 DIAGNOSTICS
+
+Should things be acting up, double-check that all the required modules are
+present; their dpkg names and cpan names are all listed. Failing that, remember
+to enable --debug mode and look at the log it generates in the Archives folder.
+
+=head1 EXIT STATUS
+
+0 on success; any other value indicates failure. A value of 1 given immediately
+most likely means that the script is already running, and a line of text should
+indicate as such.
+
+=head1 CONFIGURATION
+
+The program will attempt to use a configuration file
+(C:\SS\Latency\Bin\latencyConfig.ini or
+~/.local/share/SS/Latency/Bin/latencyConfig.ini as appropriate), structured as
+follows:
+
+     site=siteName
+     maxiterations=85000
+     maxping=200
+     ftpSite=ftp.site.net
+     user=ftpUser
+     pass=password
+     host=8.8.8.8, www.startpage.com
+     stopHour=06
+     stopMinute=45
+     openHour=8
+     closeHour=17
+     critWarn=7
+
+Note that the list of hosts is separated by both a comma and whitespace here,
+in contrast to the command-line syntax. Parameters passed to the command line
+take precedence over parameters defined in the INI file, allowing for local
+exceptions as needed.
+
+All parameters have some basic sanity checking to help
+prevent input errors, and if any are found the program will print a
+helpful reminder.
 
 =head1 SETTING UP N-ABLE
 
@@ -1390,16 +1415,12 @@ CRIT file every so often and remember where it left off. When this service sees
 the appropraite regex (define one as WARNING and one as FAILURE) it can react
 as needed, ideally sending a notification to the support account and creating
 an appropriate ticket. These services and profiles are all bundled under
-"Latency" under the SmartSystems account in N-Able. Again, note also the
-existence of the latencyLock.dat file and act accordingly; it is suggested to
-set up an automation policy to delete the file if it's there and re-launch the
-script if it's not there.
+"Latency" under the SmartSystems account in N-Able.
 
 For reference, here is the intended file tree:
 
     SS
     L-- Latency
-        |-- latencyLock.dat
         |-- Bin
             L-- latencyMonitor.exe
             L-- latencyConfig.ini
@@ -1413,6 +1434,33 @@ For reference, here is the intended file tree:
             |-- Reporting
             L-- Staging
 
+=head1 DEPENDENCIES
+
+This script depends on a number of CPAN modules:
+
+Algorithm::Loops
+Archive::Zip
+Config::Simple
+Date::Manip
+Excel::Writer::XLSX
+Net::FTP
+PerlIO::Util
+Smart::Comments
+
+Additionally, if running on Windows, Win32::Autoglob is required. If running
+under GNU/Linux, this dependency will be ignored.
+
+=head1 INCOMPATIBILITIES
+
+None known at present, though behaviour of "switch" may change in the future.
+
+=head1 BUGS AND LIMITATIONS
+
+No (confirmed) bugs known at the moment. However, forking as a concept doesn't
+exist under Windows, and the performance, notably on start-up, won't be quite
+as good as on Linux, as Strawberry Perl can't integrate quite as closely on
+Windows.
+
 =head1 AUTHOR
 
 Cory Sadowski <cory@smartsystemsaz.com>
@@ -1421,5 +1469,22 @@ Cory Sadowski <cory@smartsystemsaz.com>
 
 Report any bugs found to either the author or to the SmartSystems support
 account, <support@smartsystemsaz.com>
+
+=head1 LICENSE AND COPYRIGHT
+
+(c) 2015 SmartSystems, Inc. All rights reserved.
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 =cut
