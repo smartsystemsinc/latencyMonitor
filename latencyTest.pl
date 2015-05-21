@@ -74,7 +74,7 @@ while($i < $maxiterations)
         next;
     }
     my ($ip) = $p =~ /Reply from (\d+[.][\d.]+)/;
-    my ($duration) = $p =~ /time=(\d+)/;
+    my ($duration) = $p =~ /time=?<?(\d+)/;
 
     # write part of the result
     my $chain = "$datetime $host $ip";
