@@ -6,19 +6,8 @@
 # monitored by N-Able. Consider using a percentage over 5 minutes; e.g. if 50%
 # of packets are over 200ms, then we have an issue
 
-# TODO: See if it's possible to make this cross-platform by replacing Windows'
-# ping.exe with a perl implementation. Also see if we can make the Excel sheet
-# more useful outside of Excel by doing a little less hard-coding.
-
 # Changelog:
 # 0.4a
-# -Accounts for middle-of-the-night reboots by checking to see if today has data, and if so, looking for
-#  a differential as usual; if today has no data, it revives yesterday's after doing a check to see if
-#  it's most likely necessary
-# -Re-wrote to incorporate Smart::Comments on-demand and be otherwise relatively silent up until the actual
-#  data-gathering
-#
-# 0.4
 # -Started using version numbers
 # -Converted the latency2excel call to a subprocedure for consistency, even if it is a one-liner
 # -Set a timer and checks to terminate the child processes used to gather pings at a specific time
@@ -28,6 +17,8 @@
 # -Implemented Fcntl to ensure only one copy is running at a time
 # -Script now continues when re-launched if previous data for today exists
 #   -Goes by arguments, not a simple scan, so control is left with the user
+#   -Accounts for middle-of-the-night reboots by adding a cut off of $stopHour+1 to determine when the
+#    script should stop looking for "yesterday"
 # -Arguments can be supplied from an ini file (C:\SS\Latency\Bin\latencyConfig.ini)
 # -Arguments can also be supplied from the command line, which overrides the ini
 
@@ -35,17 +26,14 @@
 
 use strict;
 use warnings;
-
-# Modules
 use Archive::Zip qw( :ERROR_CODES :CONSTANTS ); # cpanm Archive::Zip
 use Config::Simple; # cpanm Config::Simple
 use File::Copy; # Built-in
 use Getopt::Long qw(:config no_ignore_case); # Built-in
 use Net::FTP; # cpanm Net::FTP (Case-sensitive)
 use POSIX qw(strftime); # Built-in
-BEGIN { $ENV{Smart_Comments} = " @ARGV " =~ / --debug / } # Enable Smart::Comments on demand
-use Smart::Comments -ENV; # Not needed in production; cpanm Smart::Comments
-use Time::Local; # Built-in
+use Smart::Comments; # Not used in production
+use Time::Local;
 use Win32; # Built-in
 use Win32::Autoglob; # cpanm Win32::Autoglob
 use Win32::Process; # Built-in
@@ -59,7 +47,7 @@ $SIG{ALRM} = sub { &alarmAction;
 alarm $interval;
 # Pre-declare main variables
 my ($site, $maxiterations, $maxping, $ftpSite, $user, $pass, @host);
-my ($stopHour, $stopMinute, $curHour, $curMinute);
+our ($stopHour, $stopMinute);
 
 # Try to read in parameters from the config file
 if (-e "C:\\SS\\Latency\\Bin\\latencyConfig.ini") {
@@ -76,21 +64,19 @@ if (-e "C:\\SS\\Latency\\Bin\\latencyConfig.ini") {
     $stopMinute = $cfg->param("stopMinute");
 }
 my $help;
-my $debug; # Dummy variable
 
 # Override parameters if entered on the command line
 
 GetOptions('help|h' => \$help,
-    'debug' => \$debug, # Dummy variable
-    'site|s:s' => \$site,
-    'iterations|i:i' => \$maxiterations,
-    'max-ping|m:i' => \$maxping,
-    'ftp|f:s' => \$ftpSite,
-    'user|u:s' => \$user,
-    'pass|p:s' => \$pass,
-    'domains|d:s{,}' => \@host,
-    'stop-hour|H:i' => \$stopHour,
-    'stop-minute|M:i' => \$stopMinute,
+           'site|s:s' => \$site,
+           'iterations|i:i' => \$maxiterations,
+           'max-ping|m:i' => \$maxping,
+           'ftp|f:s' => \$ftpSite,
+           'user|u:s' => \$user,
+           'pass|p:s' => \$pass,
+           'domains|d:s{,}' => \@host,
+           'stop-hour|H:i' => \$stopHour,
+           'stop-minute|M:i' => \$stopMinute,
 ) or usage();
 if ($help) {
     usage();
@@ -99,19 +85,18 @@ if ($help) {
 # Now with real documentation
 
 sub usage {
-    die("Usage: $0 [OPTION...] or else defaults to the ini\n
-        -h, --help          Display this help text\n
-            --debug         Enable debug data via Smart::Comments
-        -s, --site          Name of the site, which also names the output files\n
-        -i, --iterations    Number of times to ping, unless the script runs out of time\n
-        -m, --max-ping      Highest ping to tolerate before triggering a warning\n
-        -f, --ftp           URL of the ftp site to upload data to\n
-        -u, --user          User name for the ftp site\n
-        -p, --pass          Password for the ftp site\n
-        -d, --domains       A list of space-separated URLs or IPs to ping\n
-        -H, --stop-hours    The hour to stop the script at (24-hour format)\n
-        -M, --stop-minute   The minute of the hour to stop the script at (24-hour format)\n"
-    );
+die("Usage: $0 [OPTION...] or else defaults to the ini\n
+-h, --help          Display this help text\n
+-s, --site          Name of the site, which also names the output files\n
+-i, --iterations    Number of times to ping, unless the script runs out of time\n
+-m, --max-ping      Highest ping to tolerate before triggering a warning\n
+-f, --ftp           URL of the ftp site to upload data to\n
+-u, --user          User name for the ftp site\n
+-p, --pass          Password for the ftp site\n
+-d, --domains       A list of space-separated URLs or IPs to ping\n
+-H, --stop-hours    The hour to stop the script at (24-hour format)\n
+-M, --stop-minute   The minute of the hour to stop the script at (24-hour format)\n"
+);
 }
 
 # Warn the user if the config file is missing
@@ -138,89 +123,33 @@ my $zipdatafilenameShort = "$site" . "-latency-" . $datetime . ".zip";
 my $PIDFileName = "C:\\SS\\Latency\\pid.txt";
 use Fcntl ':flock';
 
-open my $SELF, '<', $0 or die 'I am already running...';
-flock $SELF, LOCK_EX | LOCK_NB  or exit;
+open SELF, '<', $0 or die 'I am already running...';
+flock SELF, LOCK_EX | LOCK_NB  or exit;
 
-### Starting main program
+print "Starting main program\n";
 my @children;
 
-### Clear PID file, in case of crash
+# Clear PID file, in case of crash
 unlink $PIDFileName;
 
-### Fork based on number of domains
+# Fork based on number of domains
 for ( my $count = 0; $count <= $#host; $count++) {
     my $pid = fork();
     if ($pid) {
         # parent
-        ### pid is: $pid
-        ### parent is: $$
+        print "pid is $pid, parent $$\n";
         push(@children, $pid);
     } elsif ($pid == 0) {
-        checkem($count);
-    } else {
-        die "couldn't fork: $!\n";
-    }
-}
-
-foreach (@children) {
-    my $tmp = waitpid($_, 0);
-    ### done with pid: $tmp
-}
-
-# Back to the main program, which is set to launch the next script
-### Making Excel spreadsheet
-latency2excel($site);
-
-# And then zip + archive everything to the FTP
-### Making zip file
-zipIt("C:\\SS\\Latency\\Temp\\Reporting\\*$datetime.*"); # Process only today's files
-### Archiving
-archiveIt($ftpSite, $user, $pass);
-
-# Clear PID file
-unlink $PIDFileName;
-
-# Fin
-### End of main program
-
-# Subprocedures
-
-sub checkem {
-    # child
-    # First, see if we have existing data for today and if so, check for a differential
-    my $count = shift;
-    if (-e "C:\\SS\\Latency\\Scan\\". $host[$count] . "-latency-" . $datetime . ".txt") {
-        ### File exists: "$host[$count]-latency-$datetime.txt"
-        open (my $LINES, "<", "C:\\SS\\Latency\\Scan\\". $host[$count] . "-latency-" . $datetime . ".txt")
-            or die "unable to open the test file\n";
-        my @lines = <$LINES>;
-        my $lines = @lines;
-        $maxiterations = $maxiterations - $lines;
-        ### Discrepency found: "$maxiterations more runs"
-        close($LINES)
-            or die "Unable to close the test file\n";
-    }
-    else {
-        # If today has no data, see if it's most likely time to start it
-        ### Doesn't exist: "$host[$count]. checking if yesterday's data is needed"
-        my @time = localtime;
-        --$time[3];
-        my $yesterday = strftime "%m-%d-%Y",@time;
-        if (-e "C:\\SS\\Latency\\Scan\\". $host[$count] . "-latency-" . $yesterday . ".txt") {
-            $curHour = (localtime)[2];
-            $curMinute = (localtime)[1];
-            # Check the time; if the time equals the defined quitting time, count it as a new day
-            if ($curHour < $stopHour || $curHour == $stopHour && $curMinute < $stopMinute) {
-                # Get yesterday's date
-                my @time = localtime;
-                --$time[3];
-                $datetime = strftime "%m-%d-%Y",@time;
-                ### Reviving data from yesterday
-            }
-            else {
-                ### No data for yesterday; starting a new day
-            }
-        }
+        # child
+        # Get differential and check the time; if the time equals the defined
+        # quitting time, count it as a new day
+        my $curHour = (localtime)[2];
+        my $curMinute = (localtime)[1];
+        if ($curHour < $stopHour || $curHour == $stopHour && $curMinute < $stopMinute) {
+            # Get yesterday's date
+            my @time = localtime;
+            --$time[3];
+            $datetime = strftime "%m-%d-%Y",@time;
         }
         ### $site
         ### $maxiterations
@@ -233,15 +162,53 @@ sub checkem {
         ### $stopHour
         ### $stopMinute
         ### $datetime
+        if (-e "C:\\SS\\Latency\\Scan\\". $host[$count] . "-latency-" . $datetime . ".txt") {
+            print "$host[$count] exists\n";
+            open (my $LINES, "<", "C:\\SS\\Latency\\Scan\\". $host[$count] . "-latency-" . $datetime . ".txt")
+                or die "unable to open the test file\n";
+            my @lines = <$LINES>;
+            my $lines = @lines;
+            $maxiterations = $maxiterations - $lines;
+            print "Discrepency found; will run $maxiterations more times\n";
+            close($LINES)
+                or die "Unable to close the test file\n";
+        }
+        else {print "$host[$count] doesn't exist\n";}
         latencyTest($count, $site, $maxiterations, $maxping, $host[$count]);
         exit 0;
+    } else {
+        die "couldn't fork: $!\n";
+    }
 }
+
+foreach (@children) {
+    my $tmp = waitpid($_, 0);
+    print "done with pid $tmp\n";
+}
+
+# Back to the main program, which is set to launch the next script
+print("Making Excel spreadsheet\n");
+latency2excel($site);
+
+# And then zip + archive everything to the FTP
+print("Making zip file\n");
+zipIt("C:\\SS\\Latency\\Temp\\Reporting\\*$datetime.*"); # Process only today's files
+print("Archiving\n");
+archiveIt($ftpSite, $user, $pass);
+
+# Clear PID file
+unlink $PIDFileName;
+
+# Fin
+print "End of main program\n";
+
+# Subprocedures
 
 sub latencyTest {
     my ($num, $site, $maxiterations, $maxping, $host) = (@_);
-    ### started child process for: $num
+    print "started child process for $num\n";
     system("C:\\SS\\Latency\\Bin\\latencyTest.pl", "$host", "$maxiterations", "$maxping");
-    ### done with child process for: $num
+    print "done with child process for $num\n";
     return $num;
 }
 sub latency2excel {
@@ -285,7 +252,6 @@ sub archiveIt {
 
 }
 sub alarmAction {
-    ### alarmAction event
     makeLock();
     #checkCrit();
     checkTime();
@@ -343,22 +309,21 @@ sub checkTime {
 
 =head1 NAME
 
-LatencyMonitor v0.4a - Parallel latency data collection tool for Windows
+LatencyMonitor v0.4 - Parallel latency data collection tool for Windows
 
 =head1 SYNOPSIS
 
-     perl latencyLaunch.pl [OPTION...] or else defaults to the ini
-     -h, --help          Display this help text
-         --debug         Enable debug data via Smart::Comments
-     -s, --site          Name of the site, which also names the output files
-     -i, --iterations    Number of times to ping, unless the script runs out of time
-     -m, --max-ping      Highest ping to tolerate before triggering a warning
-     -f, --ftp           URL of the ftp site to upload data to
-     -u, --user          User name for the ftp site
-     -p, --pass          Password for the ftp site
-     -d, --domains       A list of space-separated URLs or IPs to ping
-     -H, --stop-hours    The hour to stop the script at (24-hour format)
-     -M, --stop-minute   The minute of the hour to stop the script at (24-hour format)
+	 perl latencyLaunch.pl [OPTION...] or else defaults to the ini
+	 -h, --help          Display this help text
+	 -s, --site          Name of the site, which also names the output files
+	 -i, --iterations    Number of times to ping, unless the script runs out of time
+	 -m, --max-ping      Highest ping to tolerate before triggering a warning
+	 -f, --ftp           URL of the ftp site to upload data to
+	 -u, --user          User name for the ftp site
+	 -p, --pass          Password for the ftp site
+	 -d, --domains       A list of space-separated URLs or IPs to ping
+	 -H, --stop-hours    The hour to stop the script at (24-hour format)
+	 -M, --stop-minute   The minute of the hour to stop the script at (24-hour format)
 
 =head1 DESCRIPTION
 
@@ -381,10 +346,6 @@ C:\SS\latency\staging, where it will be converted into an Excel spreadsheet via
 latency2excel.pl. Afterwards, the source files and the spreadsheet will be
 zipped and uploaded to the provided FTP site.
 
-New in version 0.4a is the ability to recover more gracefully from stops and
-overnight reboots, which should enable the script to intelligently write to
-the desired/correct data files on a given day.
-
 =head1 INSTALLATION
 
 System requirements:
@@ -393,12 +354,11 @@ System requirements:
   Spring)
     -Approximately 90MB for the default installation of [Strawberry
   Perl](http://www.strawberryperl.com)
-    -Various Perl modules (facilitated by sPerlCPAN.pl)
+	-Various Perl modules (facilitated by sPerlCPAN.pl)
     -Archive::Zip (cpanm Archive::Zip)
     -Config::Simple (cpanm Config::Simple)
     -Excel::Writer::XLSX (cpanm Excel::Writer::XLSX)
     -Net::FTP (cpanm Net::FTP)
-    -Smart::Comments (cpanm Smart::Comments) (OPTIONAL, used for debugging)
     -Win32::Autoglob (cpanm Win32::Autoglob)
     -Sufficient space for log files. A day's worth is typically in the
   realm of 10MB or so.
@@ -428,31 +388,30 @@ Invocation, done within cmd.exe or Powershell (though perl itself will
 execute its processes in cmd), is as follows (assuming the script is in
 the current directory):
 
-     perl latencyLaunch.pl [OPTION...] or else defaults to the ini
-     -h, --help          Display this help text
-         --debug         Enable debug data via Smart::Comments
-     -s, --site          Name of the site, which also names the output files
-     -i, --iterations    Number of times to ping, unless the script runs out of time
-     -m, --max-ping      Highest ping to tolerate before triggering a warning
-     -f, --ftp           URL of the ftp site to upload data to
-     -u, --user          User name for the ftp site
-     -p, --pass          Password for the ftp site
-     -d, --domains       A list of space-separated URLs or IPs to ping
-     -H, --stop-hours    The hour to stop the script at (24-hour format)
-     -M, --stop-minute   The minute of the hour to stop the script at (24-hour format)
+	 perl latencyLaunch.pl [OPTION...] or else defaults to the ini
+	 -h, --help          Display this help text
+	 -s, --site          Name of the site, which also names the output files
+	 -i, --iterations    Number of times to ping, unless the script runs out of time
+	 -m, --max-ping      Highest ping to tolerate before triggering a warning
+	 -f, --ftp           URL of the ftp site to upload data to
+	 -u, --user          User name for the ftp site
+	 -p, --pass          Password for the ftp site
+	 -d, --domains       A list of space-separated URLs or IPs to ping
+	 -H, --stop-hours    The hour to stop the script at (24-hour format)
+	 -M, --stop-minute   The minute of the hour to stop the script at (24-hour format)
 
 The program will attempt to use a configuration file
 (C:\SS\latency\Bin\latencyConfig.ini), structured as follows:
 
-     site=siteName
-     maxiterations=85000
-     maxping=200
-     ftpSite=ftp.site.net
-     user=ftpUser
-     pass=password
-     host=8.8.8.8, www.startpage.com
-     stopHour=06
-     stopMinute=45
+	 site=siteName
+	 maxiterations=85000
+	 maxping=200
+	 ftpSite=ftp.site.net
+	 user=ftpUser
+	 pass=password
+	 host=8.8.8.8, www.startpage.com
+	 stopHour=06
+	 stopMinute=45
 
 Note that the list of hosts is separated by both a comma and whitespace.
 
@@ -486,11 +445,11 @@ make the log file more readable since they amount to about the same
 thing: the connection is completely hosed. For reference, those five
 conditions are:
 
-     - General failure
-     - Destination host unreachable
-     - Ping request could not find host
-     - Request timed out
-     - TTL expired in transit
+	 - General failure
+	 - Destination host unreachable
+	 - Ping request could not find host
+	 - Request timed out
+	 - TTL expired in transit
 
 As of the latest update, the script has a safeguard to ensure it only runs
 once; this allows N-Able to re-launch it periodically in case it stops for
