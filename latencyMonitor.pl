@@ -8,26 +8,33 @@ use 5.0010;    # For the sake of switch
 ##no critic (TestingAndDebugging::ProhibitNoWarnings)
 no warnings 'experimental::smartmatch';
 use feature 'switch';
+our $VERSION = '0.7';
 
 # Modules
 use Algorithm::Loops qw( NestedLoops );            # cpan Algorithm::Loops
 use Archive::Zip qw( :ERROR_CODES :CONSTANTS );    # cpan Archive::Zip
-use Carp;                                          # Built-in
-use Config::Simple;    # dpkg libconfig-simple-perl || cpan Config::Simple
+use Carp;                                          # Core
+use Config::Simple qw(-lc)
+    ;    # dpkg libconfig-simple-perl || cpan Config::Simple
 
 # NOTE: Keep the encoding of the INI file ANSI or else things go all to hell
-use Date::Manip;                 # dpkg libdate-manip-perl || cpan Date::Manip
-use English qw(-no_match_vars);  # built-in
+use Date::Manip;    # dpkg libdate-manip-perl || cpan Date::Manip
+use Email::Sender::Simple qw(try_to_sendmail)
+    ;               # dpkg libemail-sender-perl || cpan Email::Sender::Simple
+use Email::Sender::Transport::SMTP;
+use Email::Simple;
+use Email::Simple::Creator;
+use English qw(-no_match_vars);    # built-in
 use Excel::Writer::XLSX
     ; # dpkg libexcel-writer-xslx-perl || cpan Excel::Writer::XLSX (Case-sensitive)
 use Fcntl ':flock';
-use File::Basename;                             # Built-in
-use File::Copy;                                 # Built-in
-use Getopt::Long qw(:config no_ignore_case);    # Built-in
+use File::Basename;                             # Core
+use File::Copy;                                 # Core
+use Getopt::Long qw(:config no_ignore_case);    # Core
 use Net::FTP;                                   # cpan Net::FTP
 use PerlIO::Util;                               # cpan --notest PerlIO::Util
-use Pod::Usage;                                 # Built-in
-use POSIX qw(strftime);                         # Built-in
+use Pod::Usage;                                 # Core
+use POSIX qw(strftime);                         # Core
 
 ## no critic (RequireLocalizedPunctuationVars)
 BEGIN {
@@ -36,11 +43,11 @@ BEGIN {
 }
 
 use Smart::Comments -ENV;    # cpan Smart::Comments
-use Time::Local;             # Built-in
+use Time::Local;             # Core
 if ( $OSNAME eq 'MSWin32' ) {
-    require Win32;              # Built-in
+    require Win32;              # Core
     require Win32::Autoglob;    # cpan Win32::Autoglob
-    require Win32::Process;     # Built-in
+    require Win32::Process;     # Core
 }
 
 ### OS: $OSNAME
@@ -52,17 +59,19 @@ INIT {
     }
 }
 
-our $VERSION = '0.6';
-
 # Pre-declare main variables
-my ( $site, $maxiterations, $maxping, $ftp_site, $user, $pass, @host );
+my ( $site, $max_iterations, $max_ping, $ftp_site, $user, $pass, @host, );
 my ($stop_hour, $stop_minute, $cur_hour, $cur_minute,
-    $open_hour, $close_hour,  $crit_warn
+    $open_hour, $close_hour,  $crit_warn,
 );
 my $interval;
 my ($root, $base,      $bin,     $archives, $scan,
-    $temp, $reporting, $staging, $config
+    $temp, $reporting, $staging, $config,
 );
+my ( $email_to, $email_from, $email_host, $email_port, $email_username,
+    $email_password, $email_subject, @mailqueue );
+my $email_use_ssl = '0';    # Defaults to 0 unless overriden later
+
 if ( $OSNAME eq 'MSWin32' ) {
     $root = 'C:/SS';
     $base = "$root/Latency";
@@ -71,6 +80,7 @@ elsif ( $OSNAME eq 'linux' ) {
     $root = $ENV{'HOME'} . '/.local/share/SS';
     $base = "$root/Latency";
 }
+my @children;
 my @win_cleanup;
 $bin       = "$base/Bin";
 $archives  = "$base/Archives";
@@ -83,17 +93,7 @@ $config    = "$bin/latencyConfig.ini";
 my @dirs
     = ( $root, $base, $bin, $archives, $scan, $temp, $reporting, $staging );
 ### @dirs
-if ( $OSNAME eq 'linux' ) {
-    my $local = $ENV{'HOME'} . '/.local';
-    my $share = $ENV{'HOME'} . '/.local/share';
-    if ( !-d $local ) { mkdir $local or croak $ERRNO }
-    if ( !-d $share ) { mkdir $share or croak $ERRNO }
-}
-foreach my $dir (@dirs) {
-    if ( !-d $dir ) {
-        mkdir $dir or croak $ERRNO;
-    }
-}
+mkdirs();
 
 my $datetime = strftime '%m-%d-%Y', localtime;
 
@@ -101,41 +101,55 @@ my $datetime = strftime '%m-%d-%Y', localtime;
 if ( -e "$config" ) {
     my $cfg = Config::Simple->new();
     $cfg->read("$config") || croak $ERRNO;
-    $site          = $cfg->param('site');
-    $maxiterations = $cfg->param('maxiterations');
-    $maxping       = $cfg->param('maxping');
-    $ftp_site      = $cfg->param('ftpSite');
-    $user          = $cfg->param('user');
-    $pass          = $cfg->param('pass');
-    @host          = $cfg->param('host');
-    $stop_hour     = $cfg->param('stopHour');
-    $stop_minute   = $cfg->param('stopMinute');
-    $open_hour     = $cfg->param('openHour');
-    $close_hour    = $cfg->param('closeHour');
-    $crit_warn     = $cfg->param('critWarn');
+    $site           = $cfg->param('site');
+    $max_iterations = $cfg->param('maxIterations');
+    $max_ping       = $cfg->param('maxPing');
+    $ftp_site       = $cfg->param('ftpSite');
+    $user           = $cfg->param('user');
+    $pass           = $cfg->param('pass');
+    @host           = $cfg->param('host');
+    $stop_hour      = $cfg->param('stopHour');
+    $stop_minute    = $cfg->param('stopMinute');
+    $open_hour      = $cfg->param('openHour');
+    $close_hour     = $cfg->param('closeHour');
+    $crit_warn      = $cfg->param('critWarn');
+    $email_to       = $cfg->param('emailTo');
+    $email_from     = $cfg->param('emailFrom');
+    $email_host     = $cfg->param('emailHost');
+    $email_port     = $cfg->param('emailPort');
+    $email_use_ssl  = $cfg->param('emailUseSSL');
+    $email_username = $cfg->param('emailUsername');
+    $email_password = $cfg->param('emailPassword');
 }
 
 # Override parameters if entered on the command line
 
 GetOptions(
-    'help|h'          => \my $help,
-    'debug'           => \my $debug,           # Dummy variable
-    'preserve-time'   => \my $preserve_time,
-    'man'             => \my $man,
-    'version'         => \my $version,
-    'clean'           => \my $clean,
-    'site|s:s'        => \$site,
-    'iterations|i:i'  => \$maxiterations,
-    'max-ping|m:i'    => \$maxping,
-    'ftp|f:s'         => \$ftp_site,
-    'user|u:s'        => \$user,
-    'pass|p:s'        => \$pass,
-    'domains|d:s{,}'  => \my @host2,
-    'stop-hour|H:i'   => \$stop_hour,
-    'stop-minute|M:i' => \$stop_minute,
-    'open-hour|O:i'   => \$open_hour,
-    'close-hour|C:i'  => \$close_hour,
-    'crit-warn|W:i'   => \$crit_warn,
+    'help|h'             => \my $help,
+    'debug'              => \my $debug,
+    'preserve-time'      => \my $preserve_time,
+    'man'                => \my $man,
+    'version'            => \my $version,
+    'clean'              => \my $clean,
+    'site|s:s'           => \$site,
+    'max-iterations|i:i' => \$max_iterations,
+    'max-ping|m:i'       => \$max_ping,
+    'ftp|f:s'            => \$ftp_site,
+    'user|u:s'           => \$user,
+    'pass|p:s'           => \$pass,
+    'domains|d:s{,}'     => \my @host2,
+    'stop-hour|H:i'      => \$stop_hour,
+    'stop-minute|M:i'    => \$stop_minute,
+    'open-hour|O:i'      => \$open_hour,
+    'close-hour|C:i'     => \$close_hour,
+    'crit-warn|W:i'      => \$crit_warn,
+    'email-to|:s'        => \$email_to,
+    'email-from|:s'      => \$email_from,
+    'email-host|:s'      => \$email_host,
+    'email-port|:i'      => \$email_port,
+    'email-use-ssl'      => \my $email_use_ssl_option,
+    'email-username|:s'  => \$email_username,
+    'email-password|:s'  => \$email_password,
 ) or pod2usage( -verbose => 0 );
 
 if ($help) {
@@ -158,10 +172,13 @@ if (@host2)
 }
 
 if ( $debug && !$preserve_time ) {
-    $interval = '5';    # 10 seconds
+    $interval = '10';    # 10 seconds
 }
 else {
     $interval = '900';    # 15 minutes
+}
+if ($email_use_ssl_option) {
+    $email_use_ssl = '1';
 }
 
 my $finishing = 0;
@@ -173,129 +190,113 @@ local $SIG{ALRM} = sub {
 };
 alarm $interval;
 
-# Warn the user if the config file is missing
-if ( !-f "$config" ) {
-    warn "latencyConfig.ini missing\n";
-}
-
-# Verify that every variable has _something_ in it, at least
-if ( !length $site ) {
-    warn
-        "Variable 'site' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $maxiterations ) {
-    warn
-        "Variable 'max iterations' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $maxping ) {
-    warn
-        "Variable 'maxping' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $ftp_site ) {
-    warn
-        "Variable 'ftp site' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $user ) {
-    warn
-        "Variable 'ftp user' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $pass ) {
-    warn
-        "Variable 'ftp pass' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !scalar @host ) {
-    warn
-        "Variable 'domains' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $stop_hour ) {
-    warn
-        "Variable 'stop hour' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $stop_minute ) {
-    warn
-        "Variable 'stop minute' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $open_hour ) {
-    warn
-        "Variable 'open hour' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $close_hour ) {
-    warn
-        "Variable 'close hour' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-if ( !length $crit_warn ) {
-    warn
-        "Variable 'crit warn' not defined. If there's no ini file, all arguments are mandatory.\n\n";
-    pod2usage( -verbose => 0 );
-}
-
 # Set a few more variables
+$email_subject = "LatencyMonitor: Critical Warning for $site";
 
 my $zipdatafilename = "$archives/" . $site . '-latency-' . $datetime . '.zip';
 my $zipdatafilename_short = "$site" . '-latency-' . $datetime . '.zip';
 my $debug_file = "$archives/" . $site . '-debug-' . $datetime . '.txt';
 
+check_initial_vars();
 if ($debug) {
     *STDOUT->push_layer( tee => ">>$debug_file" );
     *STDERR->push_layer( tee => ">>$debug_file" );
 }
+main();
 
+sub main {
 ### Starting main program
-my @children;
 
 ### Fork based on number of domains
-for ( my $count = 0; $count <= $#host; $count++ ) {
-    my $pid = fork;
-    if ($pid) {
+    for my $count ( 0 .. $#host ) {
+        my $pid = fork;
+        if ($pid) {
 
-        # parent
-        ### pid is: $pid
-        ### parent is: $$
-        push @children, $pid;
+            # parent
+            ### pid is: $pid
+            ### parent is: $$
+            push @children, $pid;
+        }
+        elsif ( $pid == 0 ) {
+            checkem($count);    # Leaves files in $staging
+        }
+        else {
+            croak "couldn't fork: $ERRNO\n";
+        }
     }
-    elsif ( $pid == 0 ) {
-        checkem($count);    # Leaves files in $staging
-    }
-    else {
-        croak "couldn't fork: $ERRNO\n";
-    }
-}
 
-foreach (@children) {
-    my $tmp = waitpid $_, 0;
-    ### done with pid: $tmp
-    $finishing = 1;
-}
+    foreach (@children) {
+        my $tmp = waitpid $_, 0;
+        ### done with pid: $tmp
+        $finishing = 1;
+    }
 
 ### Preparing files
-move_it();
+    move_it();
 
 ### Making Excel spreadsheet
-latency2excel();    # Leaves files in $reporting
+    latency2excel();    # Leaves files in $reporting
 
 ### Making zip file
-zip_it("$reporting/*$datetime.*");    # Process only today's files
+    zip_it("$reporting/*$datetime.*");    # Process only today's files
 ### Archiving
-archive_it();                         # Leaves files on FTP and in $archives
-if ( $OSNAME eq 'MSWin32' ) {
-    windows_cleanup();                # $SELF is closed here via brute force
-    exit;
-}
+    archive_it();    # Leaves files on FTP and in $archives
+    if ( $OSNAME eq 'MSWin32' ) {
+        windows_cleanup();    # $SELF is closed here via brute force
+        exit;
+    }
 
+}
 ### End of main program
 
 # Subprocedures
+sub mkdirs {
+    if ( $OSNAME eq 'linux' ) {
+        my $local = $ENV{'HOME'} . '/.local';
+        my $share = $ENV{'HOME'} . '/.local/share';
+        if ( !-d $local ) { mkdir $local or croak $ERRNO }
+        if ( !-d $share ) { mkdir $share or croak $ERRNO }
+    }
+    foreach my $dir (@dirs) {
+        if ( !-d $dir ) {
+            mkdir $dir or croak $ERRNO;
+        }
+    }
+    return;
+}
+
+sub check_initial_vars {
+
+    # Warn the user if the config file is missing
+    if ( !-f "$config" ) {
+        warn "latencyConfig.ini missing\n";
+    }
+
+    # Verify that every variable has _something_ in it, at least
+    my @vars = (
+        $site,       $max_iterations, $max_ping,   $ftp_site,
+        $user,       $pass,           $stop_hour,  $stop_minute,
+        $open_hour,  $close_hour,     $crit_warn,  $email_to,
+        $email_from, $email_host,     $email_port, $email_username,
+        $email_password,
+    );
+
+    foreach my $var (@vars) {
+        if ( !length $var ) {
+            warn
+                "Variable $var not defined. If there's no ini file, all arguments are mandatory.\n\n";
+            pod2usage( -verbose => 0 );
+        }
+    }
+
+    if ( !scalar @host ) {
+        warn
+            "Variable 'domains' not defined. If there's no ini file, all arguments are mandatory.\n\n";
+        pod2usage( -verbose => 0 );
+    }
+
+    return;
+}
 
 sub checkem {
 
@@ -311,8 +312,8 @@ sub checkem {
             or croak "unable to open the test file\n";
         my @lines = <$LINES>;
         my $lines = @lines;
-        $maxiterations = $maxiterations - $lines;
-        ### Discrepency found: "$maxiterations more runs"
+        $max_iterations = $max_iterations - $lines;
+        ### Discrepency found: "$max_iterations more runs"
         close $LINES
             or croak "Unable to close the test file\n";
     }
@@ -346,7 +347,7 @@ sub checkem {
         }
     }
     ### $site
-    ### $maxiterations
+    ### $max_iterations
     ### $ftp_site
     ### $user
     ### $pass
@@ -356,19 +357,20 @@ sub checkem {
     ### $open_hour
     ### $close_hour
     ### $crit_warn
+    ### $email_to
+    ### $email_from
+    ### $email_host
+    ### $email_port
+    ### $email_use_ssl
+    ### $email_username
+    ### $email_password
     ### $datetime
     latency_test( $count, $host[$count] );
     exit 0;
 }
 
-sub latency_test {
+sub latency_check_vars {
     my ( $num, $host ) = @_;
-    ### started child process for: $num
-
-    if ( $host eq 'foo' ) {
-        exit 0;
-    }
-
     my $HOST = qr{^(www.|[[:alpha:]].)[[:alpha:]][\d][-][.]]+[.]}xms;
     my $TLD  = qr{(com|edu|gov|mil|net|org|biz|info|name|museum|us|ca|uk)}xms;
     my $URL  = qr{ ( ($HOST) ($TLD) ) }xms;
@@ -380,16 +382,36 @@ sub latency_test {
         );
     }
 
-    if ( $maxiterations !~ m/^\d+$/xms ) {
-        croak("Iterations must be an integer\n");
+    if ( $max_iterations !~ m/^\d+$/xms || $max_iterations == 0 ) {
+        croak("Iterations must be a non-zero integer\n");
     }
-    if ( $maxping !~ m/^\d+$/xms ) {
-        croak("Max ping must be an integer\n");
+    if ( $max_ping !~ m/^\d+$/xms || $max_ping == 0 ) {
+        croak("Max ping must be a non-zero integer\n");
     }
-    if ( $maxping == 0 ) {
-        croak("Max ping must be an integer greater than zero\n");
-    }
+    return;
+}
 
+sub latency_fail_check {
+    my $p = shift;
+    if (   $p =~ m/General[ ]failure/xms
+        || $p =~ m/Destination[ ]host[ ]unreachable/xms
+        || $p =~ m/Ping[ ]request[ ]could[ ]not[ ]find[ ]host/xms
+        || $p =~ m/Request[ ]timed[ ]out/xms
+        || $p =~ m/TTL[ ]expired[ ]in[ ]transit/xms
+        || $p =~ m/Network[ ]is[ ]unreachable/xms
+        || $p eq q() )
+    {
+        return 1;
+    }
+    else {
+        return 0;
+    }
+}
+
+sub latency_test {
+    my ( $num, $host ) = @_;
+    latency_check_vars( $num, $host );
+    ### started child process for: $num
     my $maxtimetowait = 1;    # Maximum time to wait between ping, in seconds
     my $i             = 0;    # Simple iterator
 
@@ -398,14 +420,13 @@ sub latency_test {
     my $datafilename_warn = "$scan/" . $host . '-WARN-' . $datetime . '.txt';
     my $datafilename_crit = "$scan/" . $host . '-CRIT-' . $datetime . '.txt';
 
-    open my $OUTPUT, '>>', "$datafilename"
-        or croak "unable to create the log file\n";
-    open my $OUTPUTWARN, '>>', "$datafilename_warn"
-        or croak "unable to create the warning file\n";
-    open my $OUTPUTCRIT, '>>', "$datafilename_crit"
-        or croak "unable to create the warning file\n";
+    # Create the anticipated files just in case
+    foreach ( $datafilename, $datafilename_warn, $datafilename_crit ) {
+        open my $file, '>>', $_ or croak "$ERRNO";
+        close $file or croak "$ERRNO";
+    }
 
-    while ( $i < $maxiterations ) {
+    while ( $i < $max_iterations ) {
         my $curiteration = $i + 1;
         my $ip;
         my $p;
@@ -421,82 +442,95 @@ sub latency_test {
             $p = `ping -c 1 $host`;
         }
         ### $p
-        if (   $p =~ m/General[ ]failure/xms
-            || $p =~ m/Destination[ ]host[ ]unreachable/xms
-            || $p =~ m/Ping[ ]request[ ]could[ ]not[ ]find[ ]host/xms
-            || $p =~ m/Request[ ]timed[ ]out/xms
-            || $p =~ m/TTL[ ]expired[ ]in[ ]transit/xms )
-        {
+        if ( latency_fail_check($p) == 1 ) {
             my $chain = "$timestamp $host";
 
 # Iterations here are relative if the script was continued from a previous session
             print
-                "[Iteration $curiteration/$maxiterations] FAILURE: $chain Invalid host, host is offline, or system is not connected\n"
+                "[Iteration $curiteration/$max_iterations] FAILURE: $chain Invalid host, host is offline, or system is not connected\n"
                 or croak $ERRNO;
+            open my $OUTPUT, '>>', "$datafilename"
+                or croak "unable to create the log file\n";
             print {$OUTPUT}
                 "FAILURE: $chain Invalid host, host is offline, or system is not connected\n"
                 or croak $ERRNO;
+            close $OUTPUT
+                or croak
+                "Unable to close the data file  $datafilename. Results should remain unaffected\n";
+            open my $OUTPUTWARN, '>>', "$datafilename_warn"
+                or croak "unable to create the warning file\n";
             print {$OUTPUTWARN}
                 (
                 "FAILURE: $chain Invalid host, host is offline, or system is not connected\n"
                 ) or croak $ERRNO;
+            close $OUTPUTWARN
+                or croak
+                "Unable to close the data file  $datafilename_warn. Results should remain unaffected\n";
             my $timetowait = rand($maxtimetowait) + 1;
             sleep $timetowait;
             $i++;
             next;
         }
-        if ( $OSNAME eq 'MSWin32' ) {
-            ($ip) = $p =~ /Reply[ ]from[ ](\d+[.][\d.]+)/xms;
-        }
-        elsif ( $OSNAME eq 'linux' ) {
-            ($ip) = $p =~ /PING.+([(]\d+[.]\d+[.][\d.]+[)])/xms;
-        }
-        ### $ip
-        my ($duration) = $p =~ /time\s?=?<?(\d+)/xms;
-
-        # write part of the result
-        my $chain = "$timestamp $host $ip";
-
-        if ( $duration <= $maxping ) {
-
-            # print the result, both on screen ...
-            printf
-                "[Iteration $curiteration/$maxiterations] SUCCESS: $chain %.0fms\n",
-                $duration
-                or croak $ERRNO;
-
-            # ...	and in the datafile(s)
-            print {$OUTPUT} sprintf "SUCCESS: $chain %.0fms\n", $duration
-                or croak $ERRNO;
-        }
         else {
+            if ( $OSNAME eq 'MSWin32' ) {
+                ($ip) = $p =~ /Reply[ ]from[ ](\d+[.][\d.]+)/xms;
+            }
+            elsif ( $OSNAME eq 'linux' ) {
+                ($ip) = $p =~ /PING.+([(]\d+[.]\d+[.][\d.]+[)])/xms;
+            }
+            ### $ip
+            my ($duration) = $p =~ /time\s?=?<?(\d+)/xms;
 
-            printf
-                "[Iteration $curiteration/$maxiterations] WARNING: $chain %.0fms\n",
-                $duration
-                or croak $ERRNO;
-            print {$OUTPUT} sprintf "WARNING: $chain %.0fms\n", $duration
-                or croak $ERRNO;
-            print {$OUTPUTWARN} sprintf "WARNING: $chain %.0fms\n", $duration
-                or croak $ERRNO;
+            # write part of the result
+            my $chain = "$timestamp $host $ip";
+
+            if ( $duration <= $max_ping ) {
+
+                # print the result, both on screen ...
+                printf
+                    "[Iteration $curiteration/$max_iterations] SUCCESS: $chain %.0fms\n",
+                    $duration
+                    or croak $ERRNO;
+
+                # ...	and in the datafile(s)
+                open my $OUTPUT, '>>', "$datafilename"
+                    or croak "unable to create the log file\n";
+                print {$OUTPUT} sprintf "SUCCESS: $chain %.0fms\n", $duration
+                    or croak $ERRNO;
+                close $OUTPUT
+                    or croak
+                    "Unable to close the data file  $datafilename. Results should remain unaffected\n";
+            }
+            else {
+
+                printf
+                    "[Iteration $curiteration/$max_iterations] WARNING: $chain %.0fms\n",
+                    $duration
+                    or croak $ERRNO;
+                open my $OUTPUT, '>>', "$datafilename"
+                    or croak "unable to create the log file\n";
+                print {$OUTPUT} sprintf "WARNING: $chain %.0fms\n", $duration
+                    or croak $ERRNO;
+                close $OUTPUT
+                    or croak
+                    "Unable to close the data file  $datafilename. Results should remain unaffected\n";
+                open my $OUTPUTWARN, '>>', "$datafilename_warn"
+                    or croak "unable to create the warning file\n";
+                print {$OUTPUTWARN} sprintf "WARNING: $chain %.0fms\n",
+                    $duration
+                    or croak $ERRNO;
+                close $OUTPUTWARN
+                    or croak
+                    "Unable to close the data file  $datafilename_warn. Results should remain unaffected\n";
+            }
+
+            my $timetowait = rand($maxtimetowait) + 1;
+            sleep $timetowait;
+
+            $i++;
         }
-
-        my $timetowait = rand($maxtimetowait) + 1;
-        sleep $timetowait;
-
-        $i++;
     }
 
-    # close the output files
-    close $OUTPUT
-        or croak
-        "Unable to close the data file  $datafilename. Results should remain unaffected\n";
-    close $OUTPUTWARN
-        or croak
-        "Unable to close the data file  $datafilename_warn. Results should remain unaffected\n";
-    close $OUTPUTCRIT
-        or croak
-        "Unable to close the data file ($datafilename_crit). Results should remain unaffected\n";
     return $num;
 }
 
@@ -530,7 +564,7 @@ sub move_it {
 
 sub latency2excel {
 
-# Note that $maxiterations isn't passed and is assumed to be 85000 for the sake of making the statistical highlighting
+# Note that $max_iterations isn't passed and is assumed to be 85000 for the sake of making the statistical highlighting
 
     # Create a new Excel workbook
     my @files = "$staging/*-latency-$datetime.txt";
@@ -699,7 +733,7 @@ sub latency2excel {
         close $TXTFILE or croak $ERRNO;
 
         # Clean up file after use, since it's a copy
-        unlink $file;
+        unlink $file or carp "$ERRNO";
 
         # Format I6 as "bad" if average latency >= 200
         $worksheet->conditional_formatting(
@@ -814,6 +848,7 @@ sub zip_it {
     $zip->writeToFileNamed($zipdatafilename);
     foreach my $member_name ( map {glob} @files ) {
         unlink $member_name
+            or carp "$ERRNO"
             ;    # Delete specific files instead of the entirety of Reports
     }
     return;
@@ -853,14 +888,17 @@ sub check_crit {
         my $datafilename_warn = "$scan/" . $_ . '-WARN-' . $datetime . '.txt';
         my $datafilename_crit = "$scan/" . $_ . '-CRIT-' . $datetime . '.txt';
         my $cur_time          = localtime;
+        $cur_time = UnixDate( ParseDate($cur_time), '%Y%m%d%H%M%S' );
         my @times;
         open my $LOG, '<', "$datafilename_warn"
             or return;    #warn("File not accessible $ERRNO\n");
         my @log = <$LOG>;
         close $LOG or croak $ERRNO;
+
         if (@log) {
 
             foreach my $line (@log) {
+                chomp;
                 my @values = split q{ }, $line;
                 ### @values
                 my $date = $values[1];
@@ -868,18 +906,21 @@ sub check_crit {
                 my $time = $values[2];
                 ### $time
                 my $timestamp = $date . q{ } . $time;
+                $timestamp
+                    = UnixDate( ParseDate($timestamp), '%Y%m%d%H%M%S' );
                 ### $timestamp
 
-                $cur_time = UnixDate( ParseDate($timestamp), '%Y%m%d%H%M%S' );
-                my $deltastr = "$interval seconds ago";
-                my $fifteen_ago = DateCalc( $cur_time, $deltastr );
+                my $deltastr
+                    = "$interval seconds ago";    # 900 seconds or 10 seconds
+                my $fifteen_ago = DateCalc( $timestamp, $deltastr )
+                    ;    # Gets $delta seconds in the past
                 $fifteen_ago
-                    = UnixDate( ParseDate($fifteen_ago), '%Y%m%d%H%M%S' );
-                ### $timestamp
+                    = UnixDate( ParseDate($fifteen_ago), '%Y%m%d%H%M%S' )
+                    ;    # formats; should be $delta ago
                 ### $cur_time
                 ### $fifteen_ago
 
-                if ( $timestamp ge $fifteen_ago && $timestamp le $cur_time ) {
+                if ( $timestamp >= $fifteen_ago && $timestamp <= $cur_time ) {
                     push @times, $line;
                 }
             }
@@ -887,7 +928,7 @@ sub check_crit {
                 my $cur_hour_crit = (localtime)[2];
                 if (   $cur_hour_crit >= $open_hour
                     && $cur_hour_crit <= $close_hour )
-                {    # Write only during business hours
+                {        # Write only during business hours
                     open my $OUTPUTCRIT, '>>', "$datafilename_crit"
                         or carp "unable to open the crit file\n";
                     foreach my $line (@times) {
@@ -895,11 +936,57 @@ sub check_crit {
                             or croak $ERRNO;
                     }
                     close $OUTPUTCRIT or croak $ERRNO;
+
+                    # Send an e-mail alert
+                    ### Attempting to send e-mail
+                    if ( scalar @mailqueue ) {
+                        push @mailqueue, @times;
+                        @times = @mailqueue;
+                    }
+                    if ( mail_it(@times) ) {
+                        ### E-mail sent successfully
+                        my @blank;
+                        @mailqueue = @blank;
+                    }
+                    else {
+                        carp "$ERRNO";
+                        push @mailqueue, @times;
+                        ### E-mail sending failed, adding to queue
+                    }
                 }
             }
         }
     }
     return;
+}
+
+sub mail_it {
+    my @times = @_;
+    my $email = Email::Simple->create(
+        header => [
+            To      => "$email_to",
+            From    => "$email_from",
+            Subject => "$email_subject",
+        ],
+        body => "@times",
+    );
+
+    my $transport = Email::Sender::Transport::SMTP->new(
+        {   host          => "$email_host",
+            port          => "$email_port",
+            sasl_username => "$email_username",
+            sasl_password => "$email_password",
+            ssl           => "$email_use_ssl",
+        }
+    );
+
+    # try_to_sendmail() is imported from the Email modules
+    if ( try_to_sendmail( $email, { transport => $transport } ) ) {
+        return 0;
+    }
+    else {
+        return 1;
+    }
 }
 
 sub check_time {
@@ -916,13 +1003,13 @@ sub check_time {
         if ( $OSNAME eq 'MSWin32' ) {
             ### @children
             foreach (@children) {
-                kill 9, $_;
+                kill 9, $_ or carp "$ERRNO";
             }
         }
         elsif ( $OSNAME eq 'linux' ) {
             ### @children
             foreach (@children) {
-                kill 'SIGTERM', $_;
+                kill 'SIGTERM', $_ or carp "$ERRNO";
             }
         }
 
@@ -964,29 +1051,22 @@ sub windows_cleanup {
     return;
 }
 
-sub clean {
+sub clean_check_vars {
 
     # Ensure we have all the data we need
-    if ( !length $site ) {
-        warn
-            "Variable 'site' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 0 );
+    foreach my $var ( $site, $ftp_site, $user, $pass ) {
+        if ( !length $var ) {
+            warn
+                "Variable $var not defined. If there's no ini file, all arguments are mandatory.\n\n";
+            pod2usage( -verbose => 0 );
+        }
     }
-    if ( !length $ftp_site ) {
-        warn
-            "Variable 'ftp site' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 0 );
-    }
-    if ( !length $user ) {
-        warn
-            "Variable 'ftp user' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 0 );
-    }
-    if ( !length $pass ) {
-        warn
-            "Variable 'ftp pass' not defined. If there's no ini file, supply it manually.\n\n";
-        pod2usage( -verbose => 0 );
-    }
+    return;
+}
+
+sub clean {
+
+    clean_check_vars();
 
     # Gather a list of files not matching today's date
     my @combined;
@@ -1016,7 +1096,9 @@ sub clean {
     # Get the base names of the files for easier comparison
     if (@staging_files) {
         get_unique_files(@staging_files);    # returns @combined
-        for ( my $i = 0; $i < @combined; $i++ ) {
+        for my $i ( 0 .. @combined - 1 ) {
+
+            #for ( my $i = 0; $i < @combined; $i++ ) {
             $datetime = $combined[$i][2];
             latency2excel();    # Makes decisions based on $datetime
         }
@@ -1032,7 +1114,9 @@ sub clean {
     my @reporting_files = grep { !/.*$datetime*/xms } <$reporting/*.*>;
     if (@reporting_files) {
         get_unique_files(@reporting_files);        # returns @combined
-        for ( my $i = 0; $i < @combined; $i++ ) {
+        for my $i ( 0 .. @combined - 1 ) {
+
+            #for ( my $i = 0; $i < @combined; $i++ ) {
             $datetime = $combined[$i][2];
             $zipdatafilename
                 = "$archives/" . $site . '-latency-' . $datetime . '.zip';
@@ -1135,23 +1219,40 @@ __END__
 
 Changelog:
 
+0.7
+
+-Added e-mail notifications on CRIT events via Email::Sender::Simple
+-Added corresponding options to the config file and --help
+-Re-arranged some more code to appease perlcritic
+-Ensured that all anticipated files were touched
+-Enabled case insensitivity for the config files
+-Re-wrote check_initial_vars() to be both considerably more concise and
+ to include the new e-mail variables
+-Updated list of ping errors to include 'network not reachable' and to
+ count it as a failure if $p comes back blank
+-Fixed check_crit() logic, which has been stupidly broken the whole time
+-Updated documentation to reflect the above
+
 0.6
--Adjusted the regex for Linux to include optional whitespace in the time and to look for the IP from the ping in
- the top line instead of later on as in Windows, since that doesn't always appear if packet loss is at 100%
+-Adjusted the regex for Linux to include optional whitespace in the time and to
+ look for the IP from the ping in the top line instead of later on as in
+ Windows, since that doesn't always appear if packet loss is at 100%
 -Discovered that some ping tests finishing quickly and then the check event's
  cleanup being triggered would cause issues due to files being moved, so those
  sections were re-arranged
 -Cleaned up the code considerably with the aid of perlcritic and perltidy.
 -Re-wrote latency2excel() to facilitate the use of its memory optimisation,
- which should have a fairly tremendous effect on overall efficiency of that process, notably in memory usage.
--Due to the above, introduced the use of the experimental 'switch' feature, which replaces the deprecated
+ which should have a fairly tremendous effect on overall efficiency of that
+ process, notably in memory usage. -Due to the above, introduced the use of the
+ experimental 'switch' feature, which replaces the deprecated
  Switch.pm
 -Replaced instances of "unless" with negative if-statements and tidied up a few
  more of the regexes all in the name of readability
 -Adjusted the documentation to be more in-line with standards
--Fixed a bug with the Windows cleanup operations which previously omitted the raw latency records from the final zip
--Fixed the faulthy file-locking algorithm, replacing it with the one used in Sys::RunAlone and putting it in an INIT
- block.
+-Fixed a bug with the Windows cleanup operations which previously omitted the
+ raw latency records from the final zip -Fixed the faulty file-locking
+ algorithm, replacing it with the one used in Sys::RunAlone and putting it in an
+ INIT block.
 -Removed the heartbeat file, as the proper locking algorithm makes it needless.
  Updated this documentation accordingly.
 
@@ -1160,24 +1261,27 @@ Changelog:
 -Changed the name of the main script accordingly from "latencyLaunch.pl" to
  "latencyMonitor.pl"
 -Re-wrote paths to be cross-platform ready and more easily edited
-    -NOTE: Cross-platform from here on out refers to MSWin32 and linux; can't test on OS X; BSD compatibility
-     isn't currently needed
--Implemented cross-platform compatibility via checking $OSNAME and reacting accordingly:
-    -Only loads Win32 modules if running on MSWin32
+    -NOTE: Cross-platform from here on out refers to MSWin32 and linux; can't
+    test on OS X; BSD compatibility isn't currently needed
+-Implemented cross-platform compatibility via checking $OSNAME and reacting
+ accordingly: -Only loads Win32 modules if running on MSWin32
     -Configures paths as appropriate to the OS
-    -Creates the folders as appropriate in here alongside of N-Able, in case anything gets broken
-    -Handles pinging based on the OS by making two simple decisions based on the OS, using
-     the OS' native ping
+    -Creates the folders as appropriate in here alongside of N-Able, in case
+     anything gets broken -Handles pinging based on the OS by making two simple
+     decisions based on the OS, using the OS' native ping
     -Handles process termination appropriate to the OS
-    -Implemented a workaround for Windows when it comes to terminating the child threads and continuing the
-     script; Windows has no concept of forking and has draconian locks on files, so a solution was engineered
-     to counteract this. This lack of proper forking was the reason the script was intitially split into three
-     files.
--Implemented an experimental check to filter relevant items in the WARN files to a CRIT file, based on time of
- day and how close they are together (user-defined; $x occurances in each heartbeat every 15 minutes). If this
+    -Implemented a workaround for Windows when it comes to terminating the
+     child threads and continuing the script; Windows has no concept of forking
+     and has draconian locks on files, so a solution was engineered
+     to counteract this. This lack of proper forking was the reason the script
+     was intitially split into three files.
+-Implemented an experimental check to filter relevant items in the WARN files
+ to a CRIT file, based on time of day and how close they are together
+ (user-defined; $x occurances in each heartbeat every 15 minutes). If this
  ends up being useful, it'll be moved into the Excel report.
--Implemented three new variables in the INI file to account for this: openHour, closeHour, and critWarn
--Heartbeat file is created on startup as well as on the heartbeat
+-Implemented three new variables in the INI file to account for this: openHour,
+ closeHour, and critWarn -Heartbeat file is created on startup as well as on the
+ heartbeat
 -Attempted to distribute the file via PAR::Archiver, but due to the fact that it
  wraps everything in BEGIN statements it has proven to be unusable under
  Windows, as wrapping the emulated forks in BEGIN statements doesn't work.
@@ -1185,40 +1289,46 @@ Changelog:
  entirety of the documentation since perldoc couldn't handle the executables
  produced by PAR::Archiver on its own. -Added a --version command while I was
  at it.
--Renamed the $datetime variable in latency_test to $timestamp to avoid any accidental overloading or overwriting
- of that variable, since it's used to determine the filename as well.
+-Renamed the $datetime variable in latency_test to $timestamp to avoid any
+ accidental overloading or overwriting of that variable, since it's used to
+ determine the filename as well.
 -Fixed a race condition with the various checks and the main process; if the
  checks triggered during the cleanup phase, it would fail due to missing files.
 -The time between alarms is now set to 15 minutes unless --debug is used, in
  which case it goes down to 5 seconds. This is to protect against forgetting to
  set it back, which triggered the race condition mentioned above.
--Added a --preserve-time option for use with --debug to counter-act the debug if desired.
--Finally added a cleanup option via --clean; it runs through the folder structure and finishes processing leftover
- data from days that aren't today. For sanity's sake, this is a one-off thing and doesn't launch the main script.
+-Added a --preserve-time option for use with --debug to counter-act the debug
+ if desired. -Finally added a cleanup option via --clean; it runs through the
+ folder structure and finishes processing leftover
+ data from days that aren't today. For sanity's sake, this is a one-off thing
+ and doesn't launch the main script.
 -The --debug parameter now creates a dated DEBUG file in a similar fashion to
- the CRIT/WARN files, which is included in the archive. This file contains all STDERR output, which Smart::Comments
- also uses.
+ the CRIT/WARN files, which is included in the archive. This file contains all
+ STDERR output, which Smart::Comments also uses.
 
 0.4b
--Adjusted the regex in latency_test.pl for grabbing the duration of a ping; it did not account for pings
- that were less than 1ms, which displays as "<1ms" instead of "=1ms" or the like.
+-Adjusted the regex in latency_test.pl for grabbing the duration of a ping; it
+ did not account for pings that were less than 1ms, which displays as "<1ms"
+ instead of "=1ms" or the like.
 
 0.4a
--Accounts for middle-of-the-night reboots by checking to see if today has data, and if so, looking for
- a differential as usual; if today has no data, it revives yesterday's after doing a check to see if
- it's most likely necessary
--Re-wrote to incorporate Smart::Comments on-demand and be otherwise relatively silent up until the actual
- data-gathering
+-Accounts for middle-of-the-night reboots by checking to see if today has data,
+ and if so, looking for a differential as usual; if today has no data, it
+ revives yesterday's after doing a check to see if it's most likely necessary
+-Re-wrote to incorporate Smart::Comments on-demand and be otherwise relatively
+ silent up until the actual data-gathering
 -Changed the changelog and the documentation to in-line POD
 
 0.4
 -Started using version numbers
--Converted the latency2excel call to a subprocedure for consistency, even if it is a one-liner
--Set a timer and checks to terminate the child processes used to gather pings at a specific time
+-Converted the latency2excel call to a subprocedure for consistency, even if it
+ is a one-liner -Set a timer and checks to terminate the child processes used to
+ gather pings at a specific time
     -That same timer also creates a heartbeat file for use with N-Able
     -Requres Win32::Process and a PID file; includes cleanup in this script
--Introduced a brief sleep to help counter an apparent race-condition while moving the log files around
--Implemented Fcntl to ensure only one copy is running at a time
+-Introduced a brief sleep to help counter an apparent race-condition while
+ moving the log files around -Implemented Fcntl to ensure only one copy is
+ running at a time
 -Script now continues when re-launched if previous data for today exists
     -Goes by arguments, not a simple scan, so control is left with the user
 -Arguments can be supplied from an ini file (C:\SS\Latency\Bin\latencyConfig.ini)
@@ -1247,26 +1357,33 @@ LatencyMonitor - Parallel latency data collection tool
 =head1 USAGE
 
      perl latencyMonitor.pl [OPTION...] or else defaults to the ini
-     -h, --help          Display this help text
-         --man           Displays the full embedded manual
-         --debug         Enable debug data via Smart::Comments; sets time checks to 5 seconds.
-                         Also enables debug logging.
-         --preserve-time Keeps the time checks at 15 minutes; does nothing without --debug
-         --version       Displays the version and then exits
-         --clean         Goes through all folders compiling and archiving any left-behind
-                         reports dated before today, then exits
-     -s, --site          Name of the site, which also names the output files
-     -i, --iterations    Number of times to ping, unless the script runs out of time
-     -m, --max-ping      Highest ping to tolerate before triggering a warning
-     -f, --ftp           URL of the ftp site to upload data to
-     -u, --user          User name for the ftp site
-     -p, --pass          Password for the ftp site
-     -d, --domains       A list of space-separated URLs or IPs to ping
-     -H, --stop-hours    The hour to stop the script at (24-hour format)
-     -M, --stop-minute   The minute of the hour to stop the script at (24-hour format)
-     -O, --open-hour     The hour that the site opens
-     -C, --close-hour    The hour that the site closes
-     -W, --crit-warn     How many critical items per interval before an alert is triggered
+     -h, --help           Display this help text
+         --man            Displays the full embedded manual
+         --debug          Enable debug data via Smart::Comments; sets time checks to 5 seconds.
+                          Also enables debug logging.
+         --preserve-time  Keeps the time checks at 15 minutes; does nothing without --debug
+         --version        Displays the version and then exits
+         --clean          Goes through all folders compiling and archiving any left-behind
+                          reports dated before today, then exits
+     -s, --site           Name of the site, which also names the output files
+     -i, --max-iterations Number of times to ping, unless the script runs out of time
+     -m, --max-ping       Highest ping to tolerate before triggering a warning
+     -f, --ftp            URL of the ftp site to upload data to
+     -u, --user           User name for the ftp site
+     -p, --pass           Password for the ftp site
+     -d, --domains        A list of space-separated URLs or IPs to ping
+     -H, --stop-hours     The hour to stop the script at (24-hour format)
+     -M, --stop-minute    The minute of the hour to stop the script at (24-hour format)
+     -O, --open-hour      The hour that the site opens
+     -C, --close-hour     The hour that the site closes
+     -W, --crit-warn      How many critical items per interval before an alert is triggered
+         --email-to       Who to send critical e-mail alerts to
+         --email-from     Who the e-mail will appear to be from
+         --email-host     SMTP host used to send e-mail
+         --email-port     SMTP host's mail port (usually 25 or 587)
+         --email-use-ssl  Toggles SSL; use if your SMTP host requires it
+         --email-username Username credential for SMTP host
+         --email-password Password credential for SMTP host
 
 =head1 DESCRIPTION
 
@@ -1286,11 +1403,10 @@ within a single primary instance, with forks or threads created as necessary
 (depending on the OS). It takes approximately 85,000 pings at one per second to
 cover a little over 24 hours; expect drift to occur if the latency is less than
 perfect or the host machine under heavy load. After the log file is finished,
-or a specified time reached (06:45 by default), it will automatically be moved
-to C:\SS\Latency\Staging or ~/.local/share/SS/Latency/Staging as appropriate,
-where it will be converted into an Excel spreadsheet via the *latency2excel*
-subprocedure. Afterwards, the source files and the spreadsheet will be zipped
-and uploaded to the provided FTP site.
+or a specified time reached, it will automatically be moved to
+C:\SS\Latency\Staging or ~/.local/share/SS/Latency/Staging as appropriate,
+where it will be converted into an Excel spreadsheet. Afterwards, the source
+files and the spreadsheet will be zipped and uploaded to the provided FTP site.
 
 The script also has the ability to recover gracefully from stops and overnight
 reboots, which should enable the script to intelligently write to the
@@ -1298,10 +1414,10 @@ desired/correct data files on a given day. It is recommended (and safe) to have
 N-Able simply launch the script every half hour or so, as the script will
 self-destruct if it sees another instance running.
 
-The program, as described previously, outputs to several
-text files and prints one of three things per line, roughly once per second
-(a delay of 1 second is built-in to avoid DDOSing the target). Under
-normal conditions, a line will be printed as follows:
+The program, as described previously, outputs to several text files and prints
+one of three things per line, roughly once per second (a delay of 1 second is
+built-in to avoid DDOSing the target). Under normal conditions, a line will be
+printed as follows:
 
     06/26/2014 09:13:29 www.google.com 74.125.207.104 78ms
 
@@ -1316,13 +1432,13 @@ It is constructed precisely the same as a normal line, but is prepended
 with WARNING: in order to be easily searchable. Lastly, the third
 possible condition is utter failure, which is presented as follows:
 
-    FAILURE: 06/26/2014 08:57:14 ftp.smartsystemsaz.net Invalid host, host
+    FAILURE: 06/26/2014 08:57:14 ftp.cdrom.com Invalid host, host
     is offline, or system is not connected
 
 Constructed the same as WARNING, albeit with a bit of a generic message,
-which is actually a catch-all for five different conditions in order to
+which is actually a catch-all for different conditions in order to
 make the log file more readable since they amount to about the same
-thing: the connection is completely hosed. For reference, those five
+thing: the connection is completely hosed. For reference, those
 conditions are:
 
      - General failure
@@ -1330,14 +1446,23 @@ conditions are:
      - Ping request could not find host
      - Request timed out
      - TTL expired in transit
+     - Network is unreachable
+
+Should a configurable number of warnings occur in a 15 minute period (or 10
+second period, if --debug is used), a third file will be written, the CRIT
+file. After this file is written, an attempt will be made to e-mail the
+contents to give an early warning. Should the e-mail initially fail, it will be
+queued up and sent with the other warnings en masse at the next 15 minute
+interval. These queued messages will be lost should the script terminate.
 
 As of version 0.4a, the script has a safeguard to ensure it only runs once;
 this allows N-Able to re-launch it periodically in case it stops for whatever
 reason, or to start it explicitly after a planned reboot. Along those same
-lines, it also has a feature wherein if, when it runs, it detects a
+lines, it also has a feature wherein if, when it runs, it detects an e.g.
 www.google.com latency log dated for that same day, it will count the number of
-lines in it and then adjust its run to ensure that the google log has 85000
-entries, which further facilitates the usage of planned reboots.
+lines in it and then adjust its run to ensure that the google log has the
+desired number of entries, which further facilitates the usage of planned
+reboots.
 
 Should --debug be used, additional data will be printed to STDERR but not the
 aforementioned files; instead, it will go to a dated debug log in the Archives
@@ -1346,12 +1471,13 @@ folder, where it will be scooped up later during the archival process.
 =head1 REQUIRED ARGUMENTS
 
 All obvious arguments are required; if not provided on the command line, they
-can be provided via an INI file.
+can be provided via an INI file, an example of which can be found below.
 
 =head1 OPTIONS
 
 The only behaviour-modifying options at present are --preserve-time (when used
-in conjunction with --debug) and --clean.
+in conjunction with --debug) and --clean, along with a similar binary toggle to
+require SSL with e-mail (--email-use-ssl).
 
 =head1 DIAGNOSTICS
 
@@ -1384,15 +1510,22 @@ follows:
      openHour=8
      closeHour=17
      critWarn=7
+     emailTo=x.ample@gmail.com
+     emailFrom=alerts@organisation.org
+     emailHost=smtp.organisation.net
+     emailPort=25
+     emailUseSSL=0
+     emailUsername=alerts
+     emailPassword=pass
 
 Note that the list of hosts is separated by both a comma and whitespace here,
 in contrast to the command-line syntax. Parameters passed to the command line
 take precedence over parameters defined in the INI file, allowing for local
 exceptions as needed.
 
-All parameters have some basic sanity checking to help
+Most parameters have some basic sanity checking to help
 prevent input errors, and if any are found the program will print a
-helpful reminder.
+helpful reminder. There is no check for a valid e-mail address, per se.
 
 =head1 SETTING UP N-ABLE
 
@@ -1442,6 +1575,7 @@ Algorithm::Loops
 Archive::Zip
 Config::Simple
 Date::Manip
+Email::Sender::Simple
 Excel::Writer::XLSX
 Net::FTP
 PerlIO::Util
@@ -1453,6 +1587,7 @@ under GNU/Linux, this dependency will be ignored.
 =head1 INCOMPATIBILITIES
 
 None known at present, though behaviour of "switch" may change in the future.
+The perl version variable should protect against this, however.
 
 =head1 BUGS AND LIMITATIONS
 
@@ -1463,7 +1598,7 @@ Windows.
 
 =head1 AUTHOR
 
-Cory Sadowski <cory@smartsystemsaz.com>
+Cory Sadowski <csadowski08@gmail.com>
 
 =head1 REPORTING BUGS
 
