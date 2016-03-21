@@ -15,6 +15,9 @@ system 'cpanm Net::FTP';
 system 'cpanm --notest PerlIO::Util';
 system 'cpanm Smart::Comments';
 system 'cpanm Email::Sender::Simple';
+system 'cpanm Email::Simple';
+system 'cpanm MIME::Base64';
+system 'cpanm Authen::SASL';
 
 if ( $OSNAME eq 'MSWin32' ) {
     system 'cpanm Win32::Autoglob';
