@@ -8,7 +8,7 @@ use 5.0010;    # For the sake of switch
 ##no critic (TestingAndDebugging::ProhibitNoWarnings)
 no warnings 'experimental::smartmatch';
 use feature 'switch';
-our $VERSION = '0.7';
+our $VERSION = '0.7a';
 
 # Modules
 use Algorithm::Loops qw( NestedLoops );            # cpan Algorithm::Loops
@@ -230,6 +230,9 @@ sub main {
         ### done with pid: $tmp
         $finishing = 1;
     }
+
+### Doing a last check for critical notifications
+    check_crit();
 
 ### Preparing files
     move_it();
@@ -884,21 +887,23 @@ sub alarm_action {
 
 sub check_crit {
     ### Initiating check_crit
+    my @times;
     foreach (@host) {
         my $datafilename_warn = "$scan/" . $_ . '-WARN-' . $datetime . '.txt';
         my $datafilename_crit = "$scan/" . $_ . '-CRIT-' . $datetime . '.txt';
         my $cur_time          = localtime;
         $cur_time = UnixDate( ParseDate($cur_time), '%Y%m%d%H%M%S' );
-        my @times;
+        my @local_times;
         open my $LOG, '<', "$datafilename_warn"
-            or return;    #warn("File not accessible $ERRNO\n");
+            or return;
         my @log = <$LOG>;
         close $LOG or croak $ERRNO;
 
         if (@log) {
 
             foreach my $line (@log) {
-                chomp;
+
+                #chomp $line;
                 my @values = split q{ }, $line;
                 ### @values
                 my $date = $values[1];
@@ -912,50 +917,51 @@ sub check_crit {
 
                 my $deltastr
                     = "$interval seconds ago";    # 900 seconds or 10 seconds
-                my $fifteen_ago = DateCalc( $timestamp, $deltastr )
-                    ;    # Gets $delta seconds in the past
-                $fifteen_ago
-                    = UnixDate( ParseDate($fifteen_ago), '%Y%m%d%H%M%S' )
-                    ;    # formats; should be $delta ago
+                my $time_period = DateCalc( $cur_time, $deltastr )
+                    ;    # Gets $deltastr seconds in the past
+                $time_period
+                    = UnixDate( ParseDate($time_period), '%Y%m%d%H%M%S' )
+                    ;    # formats; should be $deltastr ago
                 ### $cur_time
-                ### $fifteen_ago
+                ### $time_period
 
-                if ( $timestamp >= $fifteen_ago && $timestamp <= $cur_time ) {
-                    push @times, $line;
+                if ( $timestamp >= $time_period && $timestamp <= $cur_time ) {
+                    push @local_times, $line;
                 }
+                ### @local_times
             }
-            if ( scalar @times >= $crit_warn ) {
+            if ( scalar @local_times >= $crit_warn ) {
                 my $cur_hour_crit = (localtime)[2];
                 if (   $cur_hour_crit >= $open_hour
                     && $cur_hour_crit <= $close_hour )
-                {        # Write only during business hours
+                {    # Write only during business hours
                     open my $OUTPUTCRIT, '>>', "$datafilename_crit"
-                        or carp "unable to open the crit file\n";
-                    foreach my $line (@times) {
-                        print {$OUTPUTCRIT} ("CRITICAL: $line\n")
+                        or carp "Unable to open the crit file\n";
+                    foreach my $line (@local_times) {
+                        print {$OUTPUTCRIT} ("CRITICAL: $line")
                             or croak $ERRNO;
                     }
                     close $OUTPUTCRIT or croak $ERRNO;
-
-                    # Send an e-mail alert
-                    ### Attempting to send e-mail
-                    if ( scalar @mailqueue ) {
-                        push @mailqueue, @times;
-                        @times = @mailqueue;
-                    }
-                    if ( mail_it(@times) ) {
-                        ### E-mail sent successfully
-                        my @blank;
-                        @mailqueue = @blank;
-                    }
-                    else {
-                        carp "$ERRNO";
-                        push @mailqueue, @times;
-                        ### E-mail sending failed, adding to queue
-                    }
+                    push @times, @local_times;
                 }
             }
         }
+    }
+
+    # Send an e-mail alert
+    ### Attempting to send e-mail
+    if ( scalar @mailqueue ) {
+        push @mailqueue, @times;
+        @times = @mailqueue;
+    }
+    @times = sort @times;
+    if ( mail_it(@times) ) {
+        ### E-mail sent successfully
+        undef @mailqueue;
+    }
+    else {
+        push @mailqueue, @times;
+        ### E-mail sending failed, adding to queue
     }
     return;
 }
@@ -1180,12 +1186,12 @@ sub get_unique_files {
         foreach (@base_files) {
 
             # Separate host and date via dashes
-            my $host  = ( split /-/xms, $_ )[0];
-            my $date1 = ( split /-/xms, $_ )[-1];    # Year
+            my $host  = ( split /-/xms )[0];
+            my $date1 = ( split /-/xms )[-1];    # Year
             $date1 =~ s/[.]txt//xms;
-            my $date2 = ( split /-/xms, $_ )[-2];    # Month
-            my $date3 = ( split /-/xms, $_ )[-3];    # Day
-            my $date = $date3 . qw{-} . $date2 . qw{-} . $date1;
+            my $date2 = ( split /-/xms )[-2];                       # Month
+            my $date3 = ( split /-/xms )[-3];                       # Day
+            my $date  = $date3 . qw{-} . $date2 . qw{-} . $date1;
             push @hosts, $host;
             push @dates, $date;
         }
@@ -1218,6 +1224,14 @@ __END__
 =begin comment
 
 Changelog:
+
+0.7a
+-In check_crit(), changed $fifteen_ago to $time_period to avoid undue implications
+-In check_crit(), corrected error that printed needless blank lines in WARN files
+-In check_crit(), corrected error that caused CRIT files to double in size on each write
+-In check_crit(), changed the logic to send one large mail instead of one mail per log file
+-In check_crit(), the email body is now sorted
+-Added a final call to check_crit() before the final cleanup procedures
 
 0.7
 
