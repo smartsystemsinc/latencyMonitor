@@ -8,7 +8,7 @@ use 5.0010;    # For the sake of switch
 ##no critic (TestingAndDebugging::ProhibitNoWarnings)
 no warnings 'experimental::smartmatch';
 use feature 'switch';
-our $VERSION = '0.7a';
+our $VERSION = '0.7b';
 
 # Modules
 use Algorithm::Loops qw( NestedLoops );            # cpan Algorithm::Loops
@@ -207,6 +207,26 @@ main();
 sub main {
 ### Starting main program
 
+### $site
+### $max_iterations
+### $ftp_site
+### $user
+### $pass
+### @host
+### $stop_hour
+### $stop_minute
+### $open_hour
+### $close_hour
+### $crit_warn
+### $email_to
+### $email_from
+### $email_host
+### $email_port
+### $email_use_ssl
+### $email_username
+### $email_password
+### $datetime
+
 ### Fork based on number of domains
     for my $count ( 0 .. $#host ) {
         my $pid = fork;
@@ -349,25 +369,6 @@ sub checkem {
             }
         }
     }
-    ### $site
-    ### $max_iterations
-    ### $ftp_site
-    ### $user
-    ### $pass
-    ### @host
-    ### $stop_hour
-    ### $stop_minute
-    ### $open_hour
-    ### $close_hour
-    ### $crit_warn
-    ### $email_to
-    ### $email_from
-    ### $email_host
-    ### $email_port
-    ### $email_use_ssl
-    ### $email_username
-    ### $email_password
-    ### $datetime
     latency_test( $count, $host[$count] );
     exit 0;
 }
@@ -886,6 +887,7 @@ sub alarm_action {
 }
 
 sub check_crit {
+    # FIXME: Still accruing duplicate data from the mailqueue, apparently
     ### Initiating check_crit
     my @times;
     foreach (@host) {
@@ -901,6 +903,12 @@ sub check_crit {
 
         if (@log) {
 
+            my $deltastr
+                = "$interval seconds ago";    # 900 seconds or 10 seconds
+            my $time_period = DateCalc( $cur_time, $deltastr )
+                ;    # Gets $deltastr seconds in the past
+            ### $time_period
+
             foreach my $line (@log) {
 
                 #chomp $line;
@@ -915,26 +923,21 @@ sub check_crit {
                     = UnixDate( ParseDate($timestamp), '%Y%m%d%H%M%S' );
                 ### $timestamp
 
-                my $deltastr
-                    = "$interval seconds ago";    # 900 seconds or 10 seconds
-                my $time_period = DateCalc( $cur_time, $deltastr )
-                    ;    # Gets $deltastr seconds in the past
                 $time_period
                     = UnixDate( ParseDate($time_period), '%Y%m%d%H%M%S' )
                     ;    # formats; should be $deltastr ago
                 ### $cur_time
-                ### $time_period
 
                 if ( $timestamp >= $time_period && $timestamp <= $cur_time ) {
                     push @local_times, $line;
                 }
-                ### @local_times
             }
-            if ( scalar @local_times >= $crit_warn ) {
+            ### @local_times
+            if ( @local_times >= $crit_warn ) {
                 my $cur_hour_crit = (localtime)[2];
                 if (   $cur_hour_crit >= $open_hour
                     && $cur_hour_crit <= $close_hour )
-                {    # Write only during business hours
+                {        # Write only during business hours
                     open my $OUTPUTCRIT, '>>', "$datafilename_crit"
                         or carp "Unable to open the crit file\n";
                     foreach my $line (@local_times) {
@@ -948,13 +951,26 @@ sub check_crit {
         }
     }
 
+    if (!@times) {
+        ### Nothing to send
+        return;
+    }
+
     # Send an e-mail alert
     ### Attempting to send e-mail
-    if ( scalar @mailqueue ) {
+    if (@mailqueue) {
+        ### @mailqueue
         push @mailqueue, @times;
         @times = @mailqueue;
     }
+
+    # Sort and filter any accidental duplicates
     @times = sort @times;
+    my %seen;
+    @times = grep { !$seen{$_}++ } @times;
+
+    ### @times
+
     if ( mail_it(@times) ) {
         ### E-mail sent successfully
         undef @mailqueue;
@@ -988,10 +1004,10 @@ sub mail_it {
 
     # try_to_sendmail() is imported from the Email modules
     if ( try_to_sendmail( $email, { transport => $transport } ) ) {
-        return 0;
+        return 1;
     }
     else {
-        return 1;
+        return 0;
     }
 }
 
@@ -1224,6 +1240,14 @@ __END__
 =begin comment
 
 Changelog:
+
+0.7b
+-Corrected erronous return checks in mail_it()
+-Relocated time check in check_crit() to avoid redundant calcuations
+-Moved variable check in --debug mode to a better place to avoid duplicate data
+-Added a few more --debug entries
+-Added missing check for a lack of @times before attempting an e-mail
+-Added a hash to remove duplicate entries from @times just after the sort
 
 0.7a
 -In check_crit(), changed $fifteen_ago to $time_period to avoid undue implications
