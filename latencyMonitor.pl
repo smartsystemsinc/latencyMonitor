@@ -887,7 +887,7 @@ sub alarm_action {
 }
 
 sub check_crit {
-    # FIXME: Still accruing duplicate data from the mailqueue, apparently
+
     ### Initiating check_crit
     my @times;
     foreach (@host) {
@@ -951,7 +951,7 @@ sub check_crit {
         }
     }
 
-    if (!@times) {
+    if ( !@times ) {
         ### Nothing to send
         return;
     }
@@ -1376,16 +1376,6 @@ Changelog:
 
 =cut
 
-=pod TODO
-
-=begin comment
-
-Nothing at the moment
-
-=end comment
-
-=cut
-
 =pod
 
 =head1 NAME
@@ -1394,63 +1384,65 @@ LatencyMonitor - Parallel latency data collection tool
 
 =head1 USAGE
 
-     perl latencyMonitor.pl [OPTION...] or else defaults to the ini
-     -h, --help           Display this help text
-         --man            Displays the full embedded manual
-         --debug          Enable debug data via Smart::Comments; sets time checks to 5 seconds.
-                          Also enables debug logging.
-         --preserve-time  Keeps the time checks at 15 minutes; does nothing without --debug
-         --version        Displays the version and then exits
-         --clean          Goes through all folders compiling and archiving any left-behind
-                          reports dated before today, then exits
-     -s, --site           Name of the site, which also names the output files
-     -i, --max-iterations Number of times to ping, unless the script runs out of time
-     -m, --max-ping       Highest ping to tolerate before triggering a warning
-     -f, --ftp            URL of the ftp site to upload data to
-     -u, --user           User name for the ftp site
-     -p, --pass           Password for the ftp site
-     -d, --domains        A list of space-separated URLs or IPs to ping
-     -H, --stop-hours     The hour to stop the script at (24-hour format)
-     -M, --stop-minute    The minute of the hour to stop the script at (24-hour format)
-     -O, --open-hour      The hour that the site opens
-     -C, --close-hour     The hour that the site closes
-     -W, --crit-warn      How many critical items per interval before an alert is triggered
-         --email-to       Who to send critical e-mail alerts to
-         --email-from     Who the e-mail will appear to be from
-         --email-host     SMTP host used to send e-mail
-         --email-port     SMTP host's mail port (usually 25 or 587)
-         --email-use-ssl  Toggles SSL; use if your SMTP host requires it
-         --email-username Username credential for SMTP host
-         --email-password Password credential for SMTP host
+ perl latencyMonitor.pl [OPTION...] or else defaults to the ini
+ -h, --help           Display this help text
+     --man            Displays the full embedded manual
+     --debug          Enable debug data via Smart::Comments; sets time checks
+                        to 5 seconds. Also enables debug logging.
+     --preserve-time  Keeps the time checks at 15 minutes; does nothing without
+                        the --debug switch
+     --version        Displays the version and then exits
+     --clean          Goes through all folders compiling and archiving any
+                        left-behind reports dated before today, then exits
+ -s, --site           Name of the site, which also names the output files
+ -i, --max-iterations Number of times to ping, unless the script runs out of
+                        time
+ -m, --max-ping       Highest ping to tolerate before triggering a warning
+ -f, --ftp            URL of the ftp site to upload data to
+ -u, --user           User name for the ftp site
+ -p, --pass           Password for the ftp site
+ -d, --domains        A list of space-separated URLs or IPs to ping
+ -H, --stop-hours     The hour to stop the script at (24-hour format)
+ -M, --stop-minute    The minute of the hour to stop the script at
+                        (24-hour format)
+ -O, --open-hour      The hour that the site opens; used when checking for
+                        critical pings
+ -C, --close-hour     The hour that the site closes; used when checking for
+                        critical pings
+ -W, --crit-warn      How many critical items per interval before an alert is
+                        triggered
+     --email-to       Who to send critical e-mail alerts to
+     --email-from     Who the e-mail will appear to be from
+     --email-host     SMTP host used to send e-mail
+     --email-port     SMTP host's mail port (usually 25 or 587)
+     --email-use-ssl  Toggles SSL; use if your SMTP host requires it
+     --email-username Username credential for SMTP host
+     --email-password Password credential for SMTP host
 
 =head1 DESCRIPTION
 
 Essentially, the script is a wrapper around GNU/Linux or Windows' ping tool,
-capturing and organising output. It works well in conjunction with N-Able
-monitoring and was built with that in mind, producing currently five items of
-output per session, those being a file named with the format
-B<$site-latency-$date.txt>, which contains the full output of the command,
-B<$site-WARN.txt>, which includes just the warning and failure messages,
-B<$site-CRIT.txt>, which includes only entries deemed critical (explained
-further below), an Excel spreadsheet summarising the information, and a zip
-file, which is uploaded to an FTP site. The date is not included in the warning
-or crit files in order to make it easier to monitor with N-Able; it is
-recommended that the Log (Appended) type of job be used and that the files be
-archived for best results. The script is capable of monitoring multiple sites
-within a single primary instance, with forks or threads created as necessary
-(depending on the OS). It takes approximately 85,000 pings at one per second to
-cover a little over 24 hours; expect drift to occur if the latency is less than
-perfect or the host machine under heavy load. After the log file is finished,
-or a specified time reached, it will automatically be moved to
-C:\SS\Latency\Staging or ~/.local/share/SS/Latency/Staging as appropriate,
-where it will be converted into an Excel spreadsheet. Afterwards, the source
-files and the spreadsheet will be zipped and uploaded to the provided FTP site.
+capturing and organising output. It produces five items of output per session,
+those being a file named with the format B<$site-latency-$date.txt>, which
+contains the full output of the command, B<$site-WARN.txt>, which includes just
+the warning and failure messages, B<$site-CRIT.txt>, which includes only
+entries deemed critical (explained further below), an Excel spreadsheet
+summarising the information, and a zip file, which is uploaded to an FTP site.
+The script is capable of monitoring multiple sites within a single primary
+instance, with forks or threads created as necessary (depending on the OS). It
+takes approximately 85,000 pings at one per second to cover a little over 24
+hours; expect drift to occur if the latency is less than perfect or the host
+machine under heavy load. After the log file is finished, or a specified time
+reached, it will automatically be moved to B<C:\SS\Latency\Staging> or
+B<~/.local/share/SS/Latency/Staging> as appropriate, where it will be converted
+into an Excel spreadsheet. Afterwards, the source files and the spreadsheet
+will be zipped and uploaded to the provided FTP site.
 
 The script also has the ability to recover gracefully from stops and overnight
-reboots, which should enable the script to intelligently write to the
-desired/correct data files on a given day. It is recommended (and safe) to have
-N-Able simply launch the script every half hour or so, as the script will
-self-destruct if it sees another instance running.
+reboots, which should enable the script to somewhat intelligently write to the
+desired/correct data files on a given day; this is done by making assumptions
+around the defined stop time. The script will also self-destruct if it sees
+another instance running.
 
 The program, as described previously, outputs to several text files and prints
 one of three things per line, roughly once per second (a delay of 1 second is
@@ -1488,13 +1480,17 @@ conditions are:
 
 Should a configurable number of warnings occur in a 15 minute period (or 10
 second period, if --debug is used), a third file will be written, the CRIT
-file. After this file is written, an attempt will be made to e-mail the
-contents to give an early warning. Should the e-mail initially fail, it will be
-queued up and sent with the other warnings en masse at the next 15 minute
-interval. These queued messages will be lost should the script terminate.
+file, but only if the current time is between the B<$open_hour> and
+B<$close_hour> of the local site. After this file is written, an attempt will
+be made to e-mail the contents to give an early warning should the number of
+events go above the threshold defined by B<$crit_warn>. Should the e-mail
+initially fail, it will be queued up and sent with the other warnings en masse
+at the next 15 minute interval. These queued messages will be lost should the
+script terminate. At the end of a run, a final attempt at sending queued
+messages will be made.
 
 As of version 0.4a, the script has a safeguard to ensure it only runs once;
-this allows N-Able to re-launch it periodically in case it stops for whatever
+this allows one to re-launch it periodically in case it stops for whatever
 reason, or to start it explicitly after a planned reboot. Along those same
 lines, it also has a feature wherein if, when it runs, it detects an e.g.
 www.google.com latency log dated for that same day, it will count the number of
@@ -1532,8 +1528,8 @@ indicate as such.
 =head1 CONFIGURATION
 
 The program will attempt to use a configuration file
-(C:\SS\Latency\Bin\latencyConfig.ini or
-~/.local/share/SS/Latency/Bin/latencyConfig.ini as appropriate), structured as
+(B<C:\SS\Latency\Bin\latencyConfig.ini> or
+B<~/.local/share/SS/Latency/Bin/latencyConfig.ini> as appropriate), structured as
 follows:
 
      site=siteName
@@ -1565,35 +1561,12 @@ Most parameters have some basic sanity checking to help
 prevent input errors, and if any are found the program will print a
 helpful reminder. There is no check for a valid e-mail address, per se.
 
-=head1 SETTING UP N-ABLE
-
-In order to use the script with N-Able, it needs to be set up as a scheduled
-task consisting of an Automation Policy configured to deploy the script; it is
-also recommended to create other policies in order to install/update the script
-and the INI files. Scripts will be stored on the company FTP site in their own
-directory, currently in */Dropbox/Automation/Latency*.
-
-As mentioned previously, a default run takes approximately 24 hours by default,
-though it will stop at the nearest instance of whatever stop time is defined.
-After the runs are complete, the script will automatically copy the main log to
-a Staging folder, where it can be further processed by the *latency2excel*
-subprocedure. Afterwards, files will be moved to the Reporting folder where it
-will be archived and uploaded.
-
-While the script is deployed, it can be monitored by N-Able. To do so, make use
-of the appended log monitor, which is able to look at the WARN or, ideally,
-CRIT file every so often and remember where it left off. When this service sees
-the appropraite regex (define one as WARNING and one as FAILURE) it can react
-as needed, ideally sending a notification to the support account and creating
-an appropriate ticket. These services and profiles are all bundled under
-"Latency" under the SmartSystems account in N-Able.
-
 For reference, here is the intended file tree:
 
     SS
     L-- Latency
         |-- Bin
-            L-- latencyMonitor.exe
+            L-- latencyMonitor.pl
             L-- latencyConfig.ini
         |-- Archives
         |   L-- DEBUG.txt
@@ -1621,6 +1594,10 @@ Smart::Comments
 
 Additionally, if running on Windows, Win32::Autoglob is required. If running
 under GNU/Linux, this dependency will be ignored.
+
+As a convenience, a provided companion script, sPerlCPAN.pl, originally created
+for Windows systems, will attempt to install all needed modules along with the
+cpanm package manager.
 
 =head1 INCOMPATIBILITIES
 
