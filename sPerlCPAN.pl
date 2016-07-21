@@ -7,7 +7,7 @@ use English qw(-no_match_vars);
 our $VERSION = '0.5';
 
 system 'cpan App::cpanminus';
-system 'cpan Algorithm::Loops';
+system 'cpanm Algorithm::Loops';
 system 'cpanm Config::Simple';
 system 'cpanm Date::Manip';
 system 'cpanm Excel::Writer::XLSX';
