@@ -861,7 +861,7 @@ sub zip_it {
 sub archive_it {
 
     ### Connecting to FTP site
-    my $ftp = Net::FTP->new("$ftp_site")
+    my $ftp = Net::FTP->new("$ftp_site", Passive => 1)
         or croak "Cannot connect to $ftp_site: $EVAL_ERROR";
     ### Logging in
     $ftp->login( "$user", "$pass" )
